@@ -10,32 +10,34 @@
 // satisfy the same interface with no call-site changes.
 package vault
 
-// Item is a decrypted BitWarden SSH-Key item as seen by the launcher. Field
-// names map to the configurable custom_fields in ~/.ssh/wardenssh.json
-// (defaults: host/user/port/proxyjump); HostName carries the 'host' value.
+// Item is a decrypted BitWarden SSH-Key item as seen by the launcher.
 type Item struct {
 	ID   string
-	Name string // display label (Q30/A: BitWarden item `name`)
+	Name string // display label (Q30/A: decrypted BitWarden item `name`)
 	// Host connection directives, sourced from the item's custom fields.
 	HostName  string
 	User      string
 	Port      string
 	ProxyJump string
-	// PrivateKey is the decrypted private key bytes (OpenSSH or PEM). Real
-	// decryption is the vault client's job; the fake supplies these directly.
-	PrivateKey []byte
-	// Passphrase is the item's native SSH-Key passphrase field, if the key is
-	// passphrase-protected (Q14/C: prompted interactively at use time).
-	Passphrase string
+	// EncPrivateKey is the still-encrypted private key field from the vault.
+	// Lazy-decrypted (Q8/C) at connect time via DecryptPrivateKey.
+	EncPrivateKey string
+	// EncPassphrase is the still-encrypted passphrase field (Q14/C).
+	EncPassphrase string
 }
 
 // Source is one named, authenticated vault (a source label like "vw:personal").
 type Source interface {
 	Name() string
 	// Items returns the launchable SSH-Key items — convention: only those with
-	// a populated 'host' custom field (Q32/B). The real client reads the
-	// configurable custom-field name from the config.
+	// a populated 'host' custom field (Q32/B). Item fields (Name, host, user,
+	// port, proxyjump) are decrypted eagerly; the private key stays encrypted
+	// until DecryptPrivateKey is called (lazy decrypt, Q8/C).
 	Items() ([]Item, error)
+	// DecryptPrivateKey decrypts the item's encrypted private key field into
+	// raw private key bytes (PEM/OpenSSH) for loading into the agent. This is
+	// called at connect time, not at list-build time.
+	DecryptPrivateKey(item Item, passphrase string) ([]byte, error)
 }
 
 // Client is the multi-vault aggregate (Q16/B).
@@ -71,6 +73,12 @@ func (s *FakeSource) Items() ([]Item, error) {
 		out = append(out, it)
 	}
 	return out, nil
+}
+
+// DecryptPrivateKey satisfies Source. For the fake, returns the EncPrivateKey
+// as-is (it's typically pre-set with plaintext key bytes for tests).
+func (s *FakeSource) DecryptPrivateKey(item Item, passphrase string) ([]byte, error) {
+	return []byte(item.EncPrivateKey), nil
 }
 
 // FakeClient is a Client backed by a fixed list of Sources.
