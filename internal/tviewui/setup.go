@@ -22,6 +22,7 @@ var (
 	vaultadapterNewSource  = vaultadapter.NewSource
 	appVaultEntries        = app.VaultEntries
 	keyringSetRefreshToken = keyring.SetRefreshToken
+	keyringGetRefreshToken = keyring.GetRefreshToken
 )
 
 // SetAppVaultEntriesForTest overrides the vault-entries extractor (tests only).
@@ -42,6 +43,16 @@ func SetKeyringSetRefreshTokenForTest(f func(string, string) error) {
 // ResetKeyringSetRefreshTokenForTest restores the real keyring.SetRefreshToken.
 func ResetKeyringSetRefreshTokenForTest() {
 	keyringSetRefreshToken = keyring.SetRefreshToken
+}
+
+// SetKeyringGetRefreshTokenForTest overrides keyring.GetRefreshToken (tests only).
+func SetKeyringGetRefreshTokenForTest(f func(string) (string, error)) {
+	keyringGetRefreshToken = f
+}
+
+// ResetKeyringGetRefreshTokenForTest restores the real keyring.GetRefreshToken.
+func ResetKeyringGetRefreshTokenForTest() {
+	keyringGetRefreshToken = keyring.GetRefreshToken
 }
 
 // SetupModal is the vault unlock modal. It prompts for the master password
@@ -82,7 +93,77 @@ func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List
 		AddItem(nil, 0, 1, false).
 		AddItem(m.form, 9, 0, true).
 		AddItem(nil, 0, 1, false)
+	m.TryAutoLogin()
 	return m
+}
+
+// TryAutoLogin attempts auto-login using a stored refresh token from the OS keyring for the current vault.
+// If a valid token is present and refresh succeeds, it syncs the vault and advances setup.
+// If the token is missing, invalid, or refresh fails, it silently falls back to master password entry.
+func (m *SetupModal) TryAutoLogin() {
+	m.mu.Lock()
+	if m.loggingIn || m.idx >= len(m.vaults) {
+		m.mu.Unlock()
+		return
+	}
+	v := m.vaults[m.idx]
+	cf := m.customFields
+	m.mu.Unlock()
+
+	tok, err := keyringGetRefreshToken(v.Name)
+	if err != nil || tok == "" {
+		return
+	}
+
+	m.mu.Lock()
+	if m.loggingIn || m.idx >= len(m.vaults) {
+		m.mu.Unlock()
+		return
+	}
+	m.loggingIn = true
+	m.mu.Unlock()
+
+	go func() {
+		c := vaultclientNew(v.Server)
+		sess, err := c.RefreshToken(tok)
+		if err != nil {
+			m.mu.Lock()
+			m.loggingIn = false
+			m.mu.Unlock()
+			return
+		}
+
+		if sess.RefreshToken != "" && sess.RefreshToken != tok {
+			_ = keyringSetRefreshToken(v.Name, sess.RefreshToken)
+		}
+
+		sr, err := c.Sync(sess)
+		if err != nil {
+			m.mu.Lock()
+			m.loggingIn = false
+			m.mu.Unlock()
+			return
+		}
+
+		src := vaultadapterNewSource(v.Name, sess, sr.Ciphers, cf)
+		m.mu.Lock()
+		m.loggingIn = false
+		m.sources = append(m.sources, src)
+		m.idx++
+		m.password = ""
+		m.updateTitle()
+		m.mu.Unlock()
+
+		m.checkDone()
+
+		m.mu.Lock()
+		done := m.idx >= len(m.vaults)
+		m.mu.Unlock()
+
+		if !done {
+			m.TryAutoLogin()
+		}
+	}()
 }
 
 func (m *SetupModal) buildForm() {

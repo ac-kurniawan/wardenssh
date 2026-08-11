@@ -2,6 +2,7 @@ package tviewui_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -167,3 +168,95 @@ func TestSetupModalSavesRefreshTokenToKeyringOnLogin(t *testing.T) {
 
 // Compile-time check that vault.Client is used in the callback signature.
 var _ vault.Client = (vault.Client)(nil)
+
+func TestSetupModalAutoLoginWithKeyring(t *testing.T) {
+	tviewui.SetKeyringGetRefreshTokenForTest(func(vName string) (string, error) {
+		if vName == "myvault" {
+			return "valid-ref-token", nil
+		}
+		return "", fmt.Errorf("no token")
+	})
+	defer tviewui.ResetKeyringGetRefreshTokenForTest()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/connect/token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm: %v", err)
+		}
+		if r.FormValue("grant_type") != "refresh_token" {
+			t.Errorf("grant_type = %q, want refresh_token", r.FormValue("grant_type"))
+		}
+		if r.FormValue("refresh_token") != "valid-ref-token" {
+			t.Errorf("refresh_token = %q, want valid-ref-token", r.FormValue("refresh_token"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]string{
+			"access_token":  "mock-at",
+			"refresh_token": "valid-ref-token",
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer mock-at" {
+			t.Errorf("Authorization = %q, want Bearer mock-at", auth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	hl := hosts.NewList(nil)
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl)
+
+	doneCh := make(chan struct{})
+	m.SetOnComplete(func(vc vault.Client) {
+		close(doneCh)
+	})
+
+	select {
+	case <-doneCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("setup auto-login did not complete in time, last err: %s", m.Error())
+	}
+
+	if !m.IsDone() {
+		t.Error("expected modal to be done after auto-login")
+	}
+}
+
+func TestSetupModalAutoLoginFailureFallsBackToPasswordPrompt(t *testing.T) {
+	tviewui.SetKeyringGetRefreshTokenForTest(func(vName string) (string, error) {
+		return "expired-token", nil
+	})
+	defer tviewui.ResetKeyringGetRefreshTokenForTest()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/connect/token", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	hl := hosts.NewList(nil)
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl)
+
+	time.Sleep(100 * time.Millisecond)
+
+	if m.IsDone() {
+		t.Fatal("expected setup not to be done when auto-login fails")
+	}
+
+	if !strings.Contains(m.CurrentPrompt(), "myvault") {
+		t.Errorf("expected prompt for myvault, got: %s", m.CurrentPrompt())
+	}
+}
+
