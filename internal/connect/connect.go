@@ -123,11 +123,12 @@ func SSHArgv(entry hosts.Entry, agentPipe string) []string {
 		args = append(args, "-J", entry.ProxyJump)
 	}
 
-	// Target: user@host or just host.
-	target := entry.HostName
-	if entry.User != "" {
-		target = entry.User + "@" + entry.HostName
+	// Target: user@host. Default user is "root" when not specified.
+	user := entry.User
+	if user == "" {
+		user = "root"
 	}
+	target := user + "@" + entry.HostName
 	args = append(args, target)
 
 	return args

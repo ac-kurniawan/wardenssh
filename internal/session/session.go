@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"os"
 	"sync"
 
 	pty "github.com/aymanbagabas/go-pty"
@@ -33,6 +34,7 @@ func Start(id, alias, source string, argv []string) (*Session, error) {
 }
 
 // StartWithEnv is like Start but appends env key-value pairs to the child's environment.
+// The parent process's environment is always included; env is appended on top.
 func StartWithEnv(id, alias, source string, argv []string, env []string) (*Session, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("session: empty argv")
@@ -42,9 +44,8 @@ func StartWithEnv(id, alias, source string, argv []string, env []string) (*Sessi
 		return nil, err
 	}
 	c := p.Command(argv[0], argv[1:]...)
-	if len(env) > 0 {
-		c.Env = append(c.Env, env...)
-	}
+	// Merge parent env with extra env (extra takes precedence on duplicates).
+	c.Env = append(os.Environ(), env...)
 	if err := c.Start(); err != nil {
 		_ = p.Close()
 		return nil, err
