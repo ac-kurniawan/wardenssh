@@ -221,3 +221,38 @@ func TestKeyringDuplicateLoadSameSession(t *testing.T) {
 	}
 }
 
+// TestWipeClearsAllKeys: Wipe removes all loaded keys + internal bookkeeping.
+func TestWipeClearsAllKeys(t *testing.T) {
+	kr := NewKeyring()
+	if _, err := kr.Load(generateEd25519(t), "k1", "s1"); err != nil {
+		t.Fatalf("Load 1: %v", err)
+	}
+	if _, err := kr.Load(generateRSA(t, 2048), "k2", "s2"); err != nil {
+		t.Fatalf("Load 2: %v", err)
+	}
+	keys, _ := kr.List()
+	if len(keys) != 2 {
+		t.Fatalf("want 2 keys pre-wipe, got %d", len(keys))
+	}
+
+	kr.Wipe()
+
+	keys, _ = kr.List()
+	if len(keys) != 0 {
+		t.Errorf("want 0 keys after Wipe, got %d", len(keys))
+	}
+	if len(kr.refs) != 0 {
+		t.Errorf("want 0 ref entries after Wipe, got %d", len(kr.refs))
+	}
+}
+
+// TestWipeOnEmptyKeyringIsNoOp: Wipe on an empty keyring doesn't panic.
+func TestWipeOnEmptyKeyringIsNoOp(t *testing.T) {
+	kr := NewKeyring()
+	kr.Wipe()
+	keys, _ := kr.List()
+	if len(keys) != 0 {
+		t.Errorf("want 0 keys, got %d", len(keys))
+	}
+}
+

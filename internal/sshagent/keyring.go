@@ -133,3 +133,14 @@ func (k *Keyring) Lock(_ []byte) error { return errDisabled }
 
 // Unlock is the counterpart to Lock; disabled in v0.
 func (k *Keyring) Unlock(_ []byte) error { return errDisabled }
+
+// Wipe removes all keys from the agent and clears internal bookkeeping.
+// Called on TUI exit to ensure no key material lingers in RAM (best-effort:
+// Go's GC may still hold copies until collection, but the agent's in-memory
+// store + ref map are cleared immediately).
+func (k *Keyring) Wipe() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	_ = k.inner.RemoveAll()
+	k.refs = make(map[string]*keyEntry)
+}
