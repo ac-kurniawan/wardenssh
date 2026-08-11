@@ -111,6 +111,76 @@ func (c *Client) Login(email, masterPassword string) (*Session, error) {
 	}, nil
 }
 
+// LoginWith2FA authenticates with email, master password, and a 2FA code (TOTP/Email).
+func (c *Client) LoginWith2FA(email, masterPassword, twoFactorCode string, provider int) (*Session, error) {
+	pre, err := c.Prelogin(email)
+	if err != nil {
+		return nil, fmt.Errorf("prelogin: %w", err)
+	}
+	if pre.KDF != KdfPBKDF2 {
+		return nil, fmt.Errorf("vaultclient: KDF type %d (Argon2) not yet implemented; only PBKDF2 supported", pre.KDF)
+	}
+
+	mk := vaultcrypto.DeriveMasterKeyPBKDF2(masterPassword, email, pre.KDFIterations)
+	authHash := vaultcrypto.DeriveAuthHash(masterPassword, mk)
+
+	devID := make([]byte, 16)
+	_, _ = rand.Read(devID)
+	form := url.Values{
+		"grant_type":        {"password"},
+		"username":          {email},
+		"password":          {base64.StdEncoding.EncodeToString(authHash)},
+		"twoFactorToken":    {twoFactorCode},
+		"twoFactorProvider": {fmt.Sprintf("%d", provider)},
+		"twoFactorRemember": {"1"},
+		"scope":             {"api offline_access"},
+		"client_id":         {"cli"},
+		"client_secret":     {"na"},
+		"deviceType":        {"2"},
+		"deviceIdentifier":  {hex.EncodeToString(devID)},
+		"deviceName":        {"wardenssh"},
+	}
+	req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/identity/connect/token", bytes.NewBufferString(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("login 2fa: status %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return nil, fmt.Errorf("login 2fa: decode token: %w", err)
+	}
+
+	var symKey []byte
+	if len(tr.Key) > 0 && tr.Key[0] == '0' {
+		dec, err := vaultcrypto.Decrypt(mk, nil, tr.Key)
+		if err != nil {
+			return nil, fmt.Errorf("login 2fa: unwrap protected key (type 0): %w", err)
+		}
+		symKey = dec
+	} else {
+		stretchEnc, stretchMac := vaultcrypto.StretchKeys(mk)
+		dec, err := vaultcrypto.UnwrapSymKey(stretchEnc, stretchMac, tr.Key)
+		if err != nil {
+			return nil, fmt.Errorf("login 2fa: unwrap protected key (type 2): %w", err)
+		}
+		symKey = dec
+	}
+
+	return &Session{
+		AccessToken: tr.AccessToken,
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+		PrivateKey:  tr.PrivateKey,
+	}, nil
+}
+
 // RefreshLogin authenticates using a refresh token obtained from a previous Login.
 func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
 	devID := make([]byte, 16)
@@ -142,7 +212,6 @@ func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
 	}
 
 	// Decrypt the Protected Symmetric Key if returned in refresh
-	var symKey []byte
 	if len(tr.Key) > 0 {
 		// Note: Refresh responses might require stored keys or full login if key is empty.
 		// For BitWarden API, if Key is provided in refresh token response:
