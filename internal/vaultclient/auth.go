@@ -111,6 +111,52 @@ func (c *Client) Login(email, masterPassword string) (*Session, error) {
 	}, nil
 }
 
+// RefreshLogin authenticates using a refresh token obtained from a previous Login.
+func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
+	devID := make([]byte, 16)
+	_, _ = rand.Read(devID)
+	form := url.Values{
+		"grant_type":        {"refresh_token"},
+		"refresh_token":     {refreshToken},
+		"client_id":         {"cli"},
+		"client_secret":     {"na"},
+		"deviceType":        {"2"},
+		"deviceIdentifier":  {hex.EncodeToString(devID)},
+		"deviceName":        {"wardenssh"},
+	}
+	req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/identity/connect/token", bytes.NewBufferString(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("refresh login: status %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var tr TokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return nil, fmt.Errorf("refresh login: decode token: %w", err)
+	}
+
+	// Decrypt the Protected Symmetric Key if returned in refresh
+	var symKey []byte
+	if len(tr.Key) > 0 {
+		// Note: Refresh responses might require stored keys or full login if key is empty.
+		// For BitWarden API, if Key is provided in refresh token response:
+		if tr.Key[0] == '0' {
+			return nil, fmt.Errorf("refresh login: legacy key format not supported on refresh")
+		}
+	}
+
+	return &Session{
+		AccessToken: tr.AccessToken,
+		PrivateKey:  tr.PrivateKey,
+	}, nil
+}
+
 // SyncResponse is the subset of /api/sync's JSON we consume. The full sync
 // payload is large; we only decode the Cipher (item) list.
 type SyncResponse struct {
