@@ -262,35 +262,18 @@ type CustomField struct {
 }
 
 // Sync fetches the full vault. Requires an authenticated Session.
-// VaultWarden's /api/sync may return an empty ciphers array even when items
-// exist; in that case we fall back to /api/ciphers (which returns
-// {"data":[...]}) — the same endpoint `bw list items` uses.
+// We always use /api/ciphers for the item list (not /api/sync) because
+// VaultWarden's /api/sync does not reliably include the sshKey object on
+// SSH-Key ciphers — confirmed on a live account with 33 items where sync
+// returned 31 ciphers with zero sshKey fields, while /api/ciphers returned
+// all 33 with both sshKey objects intact. /api/ciphers is the same endpoint
+// `bw list items` uses.
 func (c *Client) Sync(s *Session) (*SyncResponse, error) {
-	req, _ := http.NewRequest(http.MethodGet, c.BaseURL+"/api/sync", nil)
-	req.Header.Set("Authorization", "Bearer "+s.AccessToken)
-	resp, err := c.HTTP.Do(req)
+	ciphers, err := c.fetchCiphers(s)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("sync: status %d: %s", resp.StatusCode, string(raw))
-	}
-	var sr SyncResponse
-	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
-		return nil, fmt.Errorf("sync: decode: %w", err)
-	}
-
-	// Fall back to /api/ciphers if /api/sync returned no ciphers.
-	if len(sr.Ciphers) == 0 {
-		ciphers, err := c.fetchCiphers(s)
-		if err != nil {
-			return nil, err
-		}
-		sr.Ciphers = ciphers
-	}
-	return &sr, nil
+	return &SyncResponse{Ciphers: ciphers}, nil
 }
 
 // fetchCiphers calls GET /api/ciphers, which returns {"data":[...]}.

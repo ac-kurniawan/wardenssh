@@ -1,24 +1,16 @@
 package vaultclient
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
-// fakeVaultServer returns a mock VaultWarden server that responds to
-// /api/sync with an empty ciphers array (matching real VW behavior where
-// sync may return no ciphers) and /api/ciphers with the actual item list
-// wrapped as {"data":[...]}.
-func fakeVaultServer(t *testing.T, ciphersPayload string) *httptest.Server {
+// fakeCiphersServer returns a mock VaultWarden server that responds to
+// /api/ciphers with {"data":[...]}.
+func fakeCiphersServer(t *testing.T, ciphersPayload string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/sync", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"object":"sync","profile":{"id":"u1","email":"test@example.com"},"ciphers":[]}`))
-	})
 	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"continuationToken":null,"data":` + ciphersPayload + `}`))
@@ -26,10 +18,10 @@ func fakeVaultServer(t *testing.T, ciphersPayload string) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-func TestSyncFallsBackToCiphersEndpoint(t *testing.T) {
-	// VaultWarden's /api/sync may return an empty ciphers array even when
-	// items exist. In that case Sync must fall back to /api/ciphers (which
-	// returns {"data":[...]}) so the caller sees the items.
+func TestSyncReturnsCiphersFromCiphersEndpoint(t *testing.T) {
+	// Sync always uses /api/ciphers (not /api/sync) because VaultWarden's
+	// /api/sync does not reliably include the sshKey object on SSH-Key
+	// ciphers. /api/ciphers is the same endpoint `bw list items` uses.
 	ciphersJSON := `[
 		{
 			"id": "abc-123",
@@ -45,7 +37,7 @@ func TestSyncFallsBackToCiphersEndpoint(t *testing.T) {
 			]
 		}
 	]`
-	srv := fakeVaultServer(t, ciphersJSON)
+	srv := fakeCiphersServer(t, ciphersJSON)
 	defer srv.Close()
 
 	c := New(srv.URL)
@@ -80,34 +72,22 @@ func TestSyncFallsBackToCiphersEndpoint(t *testing.T) {
 
 func TestSyncParsesCamelCaseKeys(t *testing.T) {
 	// VaultWarden uses camelCase JSON keys (not PascalCase). Verify that
-	// SyncResponse + Cipher structs have correct json tags.
-	syncPayload := `{
-		"object": "sync",
-		"profile": {"id": "u1", "email": "test@example.com"},
-		"ciphers": [
-			{
-				"id": "c1",
-				"name": "2.enc==",
-				"type": 5,
-				"sshKey": {
-					"privateKey": "2.pk==",
-					"publicKey": "2.pub==",
-					"keyFingerprint": "2.fp=="
-				},
-				"fields": [{"name":"2.n==","value":"2.v==","type":0}]
-			}
-		]
-	}`
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/sync", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(syncPayload))
-	})
-	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data":[]}`))
-	})
-	srv := httptest.NewServer(mux)
+	// Cipher + CustomField structs have correct json tags.
+	ciphersJSON := `[
+		{
+			"id": "c1",
+			"name": "2.enc==",
+			"type": 5,
+			"sshKey": {
+				"privateKey": "2.pk==",
+				"publicKey": "2.pub==",
+				"keyFingerprint": "2.fp==",
+				"passphrase": "2.pp=="
+			},
+			"fields": [{"name":"2.n==","value":"2.v==","type":0}]
+		}
+	]`
+	srv := fakeCiphersServer(t, ciphersJSON)
 	defer srv.Close()
 
 	c := New(srv.URL)
@@ -117,7 +97,7 @@ func TestSyncParsesCamelCaseKeys(t *testing.T) {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sr.Ciphers) != 1 {
-		t.Fatalf("expected 1 cipher from /api/sync, got %d", len(sr.Ciphers))
+		t.Fatalf("expected 1 cipher, got %d", len(sr.Ciphers))
 	}
 	if sr.Ciphers[0].ID != "c1" {
 		t.Errorf("ID = %q, want %q", sr.Ciphers[0].ID, "c1")
@@ -125,14 +105,56 @@ func TestSyncParsesCamelCaseKeys(t *testing.T) {
 	if sr.Ciphers[0].SshKey == nil || sr.Ciphers[0].SshKey.PrivateKey != "2.pk==" {
 		t.Errorf("SshKey.PrivateKey not parsed correctly")
 	}
-	if sr.Profile.ID != "u1" {
-		t.Errorf("Profile.ID = %q, want %q", sr.Profile.ID, "u1")
-	}
-	if sr.Profile.Email != "test@example.com" {
-		t.Errorf("Profile.Email = %q, want %q", sr.Profile.Email, "test@example.com")
+	if sr.Ciphers[0].SshKey.Passphrase != "2.pp==" {
+		t.Errorf("SshKey.Passphrase not parsed correctly")
 	}
 }
 
-// suppress unused import warning for json if not currently used
-var _ = json.Marshal
-var _ = strings.TrimSpace
+func TestSyncEmptyVaultReturnsNoCiphers(t *testing.T) {
+	srv := fakeCiphersServer(t, `[]`)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	sess := &Session{AccessToken: "tok"}
+	sr, err := c.Sync(sess)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sr.Ciphers) != 0 {
+		t.Errorf("expected 0 ciphers, got %d", len(sr.Ciphers))
+	}
+}
+
+func TestSyncOnlyReturnsSshKeyItemsWithPrivateKey(t *testing.T) {
+	// Items without sshKey or with empty privateKey should be present in
+	// the raw cipher list (filtering happens in vaultadapter, not here).
+	// Sync returns ALL ciphers; vaultadapter.Items() filters for SSH keys.
+	ciphersJSON := `[
+		{"id":"login-1","name":"2.enc==","type":1,"login":{"username":"2.u=="}},
+		{"id":"note-1","name":"2.enc==","type":2},
+		{"id":"ssh-1","name":"2.enc==","type":5,"sshKey":{"privateKey":"2.pk==","publicKey":"2.pub==","keyFingerprint":"2.fp=="}
+		}
+	]`
+	srv := fakeCiphersServer(t, ciphersJSON)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	sess := &Session{AccessToken: "tok"}
+	sr, err := c.Sync(sess)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sr.Ciphers) != 3 {
+		t.Fatalf("expected 3 ciphers (all types), got %d", len(sr.Ciphers))
+	}
+	// Only the SSH key cipher has SshKey populated
+	sshCount := 0
+	for _, ci := range sr.Ciphers {
+		if ci.SshKey != nil && ci.SshKey.PrivateKey != "" {
+			sshCount++
+		}
+	}
+	if sshCount != 1 {
+		t.Errorf("expected 1 cipher with sshKey, got %d", sshCount)
+	}
+}
