@@ -1,0 +1,6 @@
+# Added by code-review-graph
+.code-review-graph/
+.local
+
+# opencode runtime (plugins/skills cache, not project config)
+.agent/

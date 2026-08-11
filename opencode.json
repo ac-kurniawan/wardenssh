@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "code-review-graph": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "code-review-graph",
+        "serve"
+      ]
+    }
+  },
+  "skills": {
+    "paths": [
+      ".agents/skills"
+    ]
+  },
+  "plugin": [
+    ".agents/plugins/graphify.js"
+  ]
+}
+
+
