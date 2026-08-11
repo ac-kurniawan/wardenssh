@@ -70,9 +70,7 @@ func TestAppTriggerSyncRunsSync(t *testing.T) {
 	fc := vault.NewFakeClient()
 	app := tviewui.New(hl, tviewui.Deps{VaultCli: fc}, nil)
 
-	app.TriggerSync()
-
-	time.Sleep(50 * time.Millisecond)
+	<-app.TriggerSync()
 
 	title := app.HostPane().Title()
 	if !strings.Contains(title, "Synced") {
@@ -85,7 +83,7 @@ func TestAppStartBackgroundSync(t *testing.T) {
 	fc := vault.NewFakeClient()
 	app := tviewui.New(hl, tviewui.Deps{VaultCli: fc}, nil)
 
-	app.StartBackgroundSync(20 * time.Millisecond)
+	app.StartBackgroundSync(10 * time.Millisecond)
 	time.Sleep(50 * time.Millisecond)
 	app.StopBackgroundSync()
 
@@ -105,9 +103,7 @@ func TestAppTriggerSyncOfflineStatusOnSyncError(t *testing.T) {
 	fc := &failingVaultClient{}
 	app := tviewui.New(hl, tviewui.Deps{VaultCli: fc}, nil)
 
-	app.TriggerSync()
-
-	time.Sleep(50 * time.Millisecond)
+	<-app.TriggerSync()
 
 	title := app.HostPane().Title()
 	if !strings.Contains(title, "Sync failed (offline)") {

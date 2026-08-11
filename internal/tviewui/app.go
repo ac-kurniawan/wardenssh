@@ -70,7 +70,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	// Wire host pane callbacks.
 	a.hostPane.SetOnConnect(a.handleConnect)
 	a.hostPane.SetOnScopeChange(func() {})
-	a.hostPane.SetOnRefresh(a.TriggerSync)
+	a.hostPane.SetOnRefresh(func() { _ = a.TriggerSync() })
 
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -143,9 +143,12 @@ func (a *App) SkipSetup() {
 }
 
 // TriggerSync performs vault sync in a background goroutine and updates the
-// host pane sync status header and host entries upon completion.
-func (a *App) TriggerSync() {
+// host pane sync status header and host entries upon completion. Returns a channel
+// that closes when the sync finishes.
+func (a *App) TriggerSync() <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if a.deps.VaultCli == nil {
 			return
 		}
@@ -157,27 +160,22 @@ func (a *App) TriggerSync() {
 				vc = vaultclientNew(a.vaults[0].Server)
 			}
 			err = vAdapterClient.SyncAll(vc)
-			if err == nil {
-				for _, src := range vAdapterClient.Sources() {
-					items, itemErr := src.Items()
-					if itemErr == nil {
-						var entries []hosts.Entry
-						for _, it := range items {
-							entries = append(entries, hosts.Entry{
-								Alias:     it.Name,
-								HostName:  it.HostName,
-								User:      it.User,
-								Port:      it.Port,
-								ProxyJump: it.ProxyJump,
-								Source:    src.Name(),
-							})
-						}
-						a.hostList.ReplaceVaultEntries(src.Name(), entries)
-					}
-				}
-			}
 		} else {
 			err = a.deps.VaultCli.Sync()
+		}
+
+		if err == nil {
+			if vEntries, errEntries := appVaultEntries(a.deps.VaultCli); errEntries == nil {
+				for _, src := range a.deps.VaultCli.Sources() {
+					var srcEntries []hosts.Entry
+					for _, e := range vEntries {
+						if e.Source == src.Name() {
+							srcEntries = append(srcEntries, e)
+						}
+					}
+					a.hostList.ReplaceVaultEntries(src.Name(), srcEntries)
+				}
+			}
 		}
 
 		var status string
@@ -187,10 +185,18 @@ func (a *App) TriggerSync() {
 			status = fmt.Sprintf("Synced %s", time.Now().Format("15:04"))
 		}
 
-		a.hostPane.SetSyncStatus(status)
-		a.hostPane.Refresh()
-		a.app.QueueUpdateDraw(func() {})
+		a.queueUpdateDraw(func() {
+			a.hostPane.SetSyncStatus(status)
+			a.hostPane.Refresh()
+		})
 	}()
+	return done
+}
+
+func (a *App) queueUpdateDraw(fn func()) {
+	if fn != nil {
+		fn()
+	}
 }
 
 // StartBackgroundSync starts a background ticker with the given interval that triggers vault sync.
