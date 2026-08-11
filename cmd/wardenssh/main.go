@@ -21,6 +21,9 @@ import (
 
 	"github.com/ac-kurniawan/wardenssh/internal/app"
 	"github.com/ac-kurniawan/wardenssh/internal/config"
+	"github.com/ac-kurniawan/wardenssh/internal/connect"
+	"github.com/ac-kurniawan/wardenssh/internal/session"
+	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
 	"github.com/ac-kurniawan/wardenssh/internal/tui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 )
@@ -41,7 +44,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	_ = cfg // used to drive the (deferred) real vault client + custom_fields
+	_ = cfg // used to drive vault client + custom_fields
 
 	// File source: ~/.ssh/config (read-only in v0). Missing file -> nil reader.
 	sshConfigPath := filepath.Join(filepath.Dir(cfgPath), "config")
@@ -50,9 +53,6 @@ func run() error {
 		sshConfigReader = bytes.NewReader(data)
 	}
 
-	// v0: vault client is a stub (no items) until real crypto is verified
-	// against a live VaultWarden. The interface is in place; swap FakeClient
-	// for the real client later with zero call-site changes here.
 	var vc vault.Client = vault.NewFakeClient()
 
 	hostList, err := app.BuildHostList(sshConfigReader, vc)
@@ -60,7 +60,27 @@ func run() error {
 		return fmt.Errorf("build host list: %w", err)
 	}
 
-	p := tea.NewProgram(tui.New(hostList), tea.WithAltScreen())
+	// 1. Initialize agent keyring + listener.
+	kr := sshagent.NewKeyring()
+	pipePath := connect.AgentPipePath()
+	l, err := sshagent.Listen(pipePath)
+	if err != nil {
+		return fmt.Errorf("start agent listener: %w", err)
+	}
+	defer l.Close()
+	go sshagent.Serve(l, kr)
+
+	// 2. Initialize session manager.
+	mgr := session.NewManager()
+
+	deps := tui.Deps{
+		Agent:     kr,
+		Mgr:       mgr,
+		VaultCli:  vc,
+		AgentPipe: pipePath,
+	}
+
+	p := tea.NewProgram(tui.NewWithDeps(hostList, deps), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("run tui: %w", err)
 	}
