@@ -9,15 +9,28 @@ package tui
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/connect"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/session"
 	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
+)
+
+// Indirection points for testability (tests can override these to inject
+// mock vault clients without touching real network endpoints).
+var (
+	vaultclientNew     = vaultclient.New
+	vaultadapterNewClient = vaultadapter.NewClient
+	vaultadapterNewSource = vaultadapter.NewSource
 )
 
 // ConnectMsg is emitted by Enter on a selected entry, carrying the entry the
@@ -33,6 +46,18 @@ type SessionExitedMsg struct {
 	SessionID string
 }
 
+// VaultReadyMsg is emitted when a vault login + sync succeeds. The assembled
+// vault.Source is carried for the model to merge into its vault client.
+type VaultReadyMsg struct {
+	Source *vaultadapter.Source
+}
+
+// VaultErrorMsg is emitted when a vault login or sync fails. The model stays
+// in setup state, displays the error, and clears the password for retry.
+type VaultErrorMsg struct {
+	Err error
+}
+
 // Connect intent — handled by the model or test.
 func newConnectCmd(e hosts.Entry) tea.Cmd {
 	return func() tea.Msg { return ConnectMsg{Entry: e} }
@@ -43,14 +68,16 @@ type state int
 const (
 	stateList state = iota
 	stateQuitModal
+	stateSetup
 )
 
 // Deps holds injected dependencies for the TUI model.
 type Deps struct {
-	Agent     *sshagent.Keyring
-	Mgr       *session.Manager
-	VaultCli  vault.Client
-	AgentPipe string
+	Agent        *sshagent.Keyring
+	Mgr          *session.Manager
+	VaultCli     vault.Client
+	AgentPipe    string
+	CustomFields config.CustomFields
 }
 
 // Model is the Bubble Tea model for the launcher. It is a value type with a
@@ -63,10 +90,19 @@ type Model struct {
 	lastAction string
 	errStatus  string
 
-	agent     *sshagent.Keyring
-	mgr       *session.Manager
-	vaultCli  vault.Client
-	agentPipe string
+	agent        *sshagent.Keyring
+	mgr          *session.Manager
+	vaultCli     vault.Client
+	agentPipe    string
+	customFields config.CustomFields
+
+	// Setup modal state
+	setupInput     textinput.Model
+	setupVaults    []config.Vault
+	setupVaultIdx  int
+	setupError     string
+	setupSources   []*vaultadapter.Source
+	setupLoggingIn bool
 }
 
 // New returns the initial launcher model over the given host list.
@@ -77,12 +113,37 @@ func New(h *hosts.List) Model {
 // NewWithDeps returns the launcher model with injected session/agent dependencies.
 func NewWithDeps(h *hosts.List, deps Deps) Model {
 	return Model{
-		hostList:  h,
-		st:        stateList,
-		agent:     deps.Agent,
-		mgr:       deps.Mgr,
-		vaultCli:  deps.VaultCli,
-		agentPipe: deps.AgentPipe,
+		hostList:     h,
+		st:           stateList,
+		agent:        deps.Agent,
+		mgr:          deps.Mgr,
+		vaultCli:     deps.VaultCli,
+		agentPipe:    deps.AgentPipe,
+		customFields: deps.CustomFields,
+	}
+}
+
+// NewWithSetup returns a model that starts in the setup (vault unlock) state.
+// The user is prompted sequentially for each vault's master password. Esc
+// skips the current vault; after all vaults are processed (or skipped), the
+// model transitions to the list state.
+func NewWithSetup(h *hosts.List, deps Deps, vaults []config.Vault) Model {
+	ti := textinput.New()
+	ti.EchoMode = textinput.EchoPassword
+	ti.EchoCharacter = '*'
+	ti.Placeholder = "master password"
+	ti.Focus()
+	ti.CharLimit = 0
+	return Model{
+		hostList:      h,
+		st:            stateSetup,
+		agent:         deps.Agent,
+		mgr:           deps.Mgr,
+		agentPipe:     deps.AgentPipe,
+		customFields:  deps.CustomFields,
+		setupInput:    ti,
+		setupVaults:   vaults,
+		setupVaultIdx: 0,
 	}
 }
 
@@ -103,6 +164,9 @@ func syncTickCmd() tea.Cmd {
 
 // Init satisfies tea.Model.
 func (m Model) Init() tea.Cmd {
+	if m.st == stateSetup {
+		return textinput.Blink // cursor blink for the password field
+	}
 	if m.vaultCli != nil {
 		return syncTickCmd()
 	}
@@ -112,6 +176,13 @@ func (m Model) Init() tea.Cmd {
 // Update satisfies tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case VaultReadyMsg:
+		return m.handleVaultReady(msg)
+	case VaultErrorMsg:
+		m.setupError = msg.Err.Error()
+		m.setupInput.Reset()
+		m.setupLoggingIn = false
+		return m, nil
 	case ConnectMsg:
 		if m.mgr == nil || m.agent == nil {
 			// No deps injected (e.g. basic unit test); intent was emitted.
@@ -161,6 +232,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch m.st {
+		case stateSetup:
+			return m.updateSetup(msg)
 		case stateList:
 			return m.updateList(msg)
 		case stateQuitModal:
@@ -174,6 +247,101 @@ func generateSessionID() string {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+// --- setup state ---
+
+// updateSetup handles keystrokes while in the vault unlock modal.
+func (m Model) updateSetup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// While a login is in-flight, ignore all keystrokes.
+	if m.setupLoggingIn {
+		return m, nil
+	}
+	switch msg.Type {
+	case tea.KeyEsc:
+		return m.skipCurrentVault()
+	case tea.KeyEnter:
+		pass := m.setupInput.Value()
+		if pass == "" {
+			return m, nil
+		}
+		m.setupLoggingIn = true
+		m.setupError = ""
+		v := m.setupVaults[m.setupVaultIdx]
+		cf := m.customFields
+		return m, loginCmd(v, pass, cf)
+	case tea.KeyBackspace:
+		var cmd tea.Cmd
+		m.setupInput, cmd = m.setupInput.Update(msg)
+		return m, cmd
+	case tea.KeyRunes, tea.KeyCtrlU, tea.KeyCtrlW:
+		var cmd tea.Cmd
+		m.setupInput, cmd = m.setupInput.Update(msg)
+		return m, cmd
+	default:
+		return m, nil
+	}
+}
+
+// skipCurrentVault advances to the next vault or transitions to list state
+// if all vaults have been processed.
+func (m Model) skipCurrentVault() (tea.Model, tea.Cmd) {
+	m.setupVaultIdx++
+	m.setupError = ""
+	m.setupInput.Reset()
+	if m.setupVaultIdx >= len(m.setupVaults) {
+		return m.transitionToList()
+	}
+	return m, nil
+}
+
+// handleVaultReady collects the successful source and either advances to the
+// next vault prompt or transitions to the list state with the merged client.
+func (m Model) handleVaultReady(msg VaultReadyMsg) (tea.Model, tea.Cmd) {
+	m.setupLoggingIn = false
+	if msg.Source != nil {
+		m.setupSources = append(m.setupSources, msg.Source)
+	}
+	m.setupVaultIdx++
+	m.setupError = ""
+	m.setupInput.Reset()
+	if m.setupVaultIdx >= len(m.setupVaults) {
+		return m.transitionToList()
+	}
+	return m, nil
+}
+
+// transitionToList finalizes the vault client from collected sources and
+// transitions to the list state.
+func (m Model) transitionToList() (tea.Model, tea.Cmd) {
+	if len(m.setupSources) > 0 {
+		m.vaultCli = vaultadapterNewClient(m.setupSources...)
+	}
+	m.st = stateList
+	m.setupInput.Blur()
+	var cmds []tea.Cmd
+	if m.vaultCli != nil {
+		cmds = append(cmds, syncTickCmd())
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// loginCmd performs the async vault login + sync. Returns VaultReadyMsg on
+// success or VaultErrorMsg on failure.
+func loginCmd(v config.Vault, pass string, cf config.CustomFields) tea.Cmd {
+	return func() tea.Msg {
+		c := vaultclientNew(v.Server)
+		sess, err := c.Login(v.Email, pass)
+		if err != nil {
+			return VaultErrorMsg{Err: fmt.Errorf("login %q: %w", v.Name, err)}
+		}
+		sr, err := c.Sync(sess)
+		if err != nil {
+			return VaultErrorMsg{Err: fmt.Errorf("sync %q: %w", v.Name, err)}
+		}
+		src := vaultadapterNewSource(v.Name, sess, sr.Ciphers, cf)
+		return VaultReadyMsg{Source: src}
+	}
 }
 
 // View satisfies tea.Model. The real rendering (Lip Gloss styling + badges +
@@ -197,6 +365,32 @@ func (m Model) InQuitModal() bool { return m.st == stateQuitModal }
 // LastAction returns the last modal choice ("killall"/"detach"/"cancel") for
 // inspection/testing; "" before any modal action.
 func (m Model) LastAction() string { return m.lastAction }
+
+// --- setup state accessors (used by tests + view renderer) ---
+
+// InSetup reports whether the vault unlock modal is active.
+func (m Model) InSetup() bool { return m.st == stateSetup }
+
+// SetupPrompt returns the prompt text for the current vault being unlocked.
+func (m Model) SetupPrompt() string {
+	if m.setupVaultIdx >= len(m.setupVaults) {
+		return ""
+	}
+	v := m.setupVaults[m.setupVaultIdx]
+	return fmt.Sprintf("%s (%s)", v.Name, v.Email)
+}
+
+// SetupPassword returns the current password input value (for tests).
+func (m Model) SetupPassword() string { return m.setupInput.Value() }
+
+// SetupError returns the last login error message (empty if none).
+func (m Model) SetupError() string { return m.setupError }
+
+// VaultClient returns the assembled vault client (nil until setup completes).
+func (m Model) VaultClient() vault.Client { return m.vaultCli }
+
+// SetupInputView returns the textinput view string (masked password field).
+func (m Model) SetupInputView() string { return m.setupInput.View() }
 
 // --- list state ---
 

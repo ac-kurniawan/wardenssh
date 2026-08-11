@@ -1,12 +1,15 @@
 package tui_test
 
 import (
+	"fmt"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tui"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 )
 
 // runeKey builds a KeyRunes KeyMsg for the given rune(s).
@@ -208,4 +211,173 @@ func anyLive(l *hosts.List) bool {
 		}
 	}
 	return false
+}
+
+// --- Setup modal tests ---
+
+func sampleVaults() []config.Vault {
+	return []config.Vault{
+		{Name: "vw", Server: "https://vw.example.com", Email: "user@example.com"},
+	}
+}
+
+// TestSetupModalInitialState: NewWithSetup produces a model in setup state
+// with the textinput focused and the first vault's prompt shown.
+func TestSetupModalInitialState(t *testing.T) {
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, sampleVaults())
+
+	if !m.InSetup() {
+		t.Fatal("expected model to be in setup state")
+	}
+	if m.SetupPrompt() == "" {
+		t.Fatal("expected non-empty setup prompt")
+	}
+	// The prompt should mention the vault name and email.
+	prompt := m.SetupPrompt()
+	if !contains(prompt, "vw") {
+		t.Errorf("prompt should contain vault name 'vw', got: %s", prompt)
+	}
+	if !contains(prompt, "user@example.com") {
+		t.Errorf("prompt should contain email, got: %s", prompt)
+	}
+}
+
+// TestSetupModalTypingBuildsPassword: typing runes into the setup modal
+// accumulates into the password field (masked).
+func TestSetupModalTypingBuildsPassword(t *testing.T) {
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, sampleVaults())
+
+	mm, _ := m.Update(runeKey("p"))
+	mm, _ = mm.Update(runeKey("a"))
+	mm, _ = mm.Update(runeKey("s"))
+	mm, _ = mm.Update(runeKey("s"))
+
+	mModel := mm.(tui.Model)
+	if got := mModel.SetupPassword(); got != "pass" {
+		t.Errorf("expected password 'pass', got %q", got)
+	}
+}
+
+// TestSetupModalBackspaceDeletesLastChar: Backspace removes the last char.
+func TestSetupModalBackspaceDeletesLastChar(t *testing.T) {
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, sampleVaults())
+
+	mm, _ := m.Update(runeKey("h"))
+	mm, _ = mm.Update(runeKey("i"))
+	mm, _ = mm.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+
+	mModel := mm.(tui.Model)
+	if got := mModel.SetupPassword(); got != "h" {
+		t.Errorf("expected 'h' after backspace, got %q", got)
+	}
+}
+
+// TestSetupModalEscSkipsVault: Esc transitions to list state (graceful
+// degradation — file-only hosts, no vault).
+func TestSetupModalEscSkipsVault(t *testing.T) {
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, sampleVaults())
+
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mModel := mm.(tui.Model)
+
+	if mModel.InSetup() {
+		t.Fatal("expected model to leave setup state after Esc")
+	}
+	if mModel.VaultClient() != nil {
+		t.Fatal("expected nil vault client after skipping vault")
+	}
+}
+
+// TestSetupModalEnterEmitsLoginCmd: Enter returns a command (the login cmd).
+func TestSetupModalEnterEmitsLoginCmd(t *testing.T) {
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, sampleVaults())
+
+	// Type a password first.
+	mm, _ := m.Update(runeKey("secret"))
+	// Enter should produce a command.
+	_, cmd := mm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected non-nil command on Enter in setup state")
+	}
+}
+
+// TestSetupModalEscMultiVaultSkipsAll: with multiple vaults, Esc skips the
+// current vault and advances to the next. A second Esc skips that too.
+func TestSetupModalEscMultiVaultSkipsAll(t *testing.T) {
+	vaults := []config.Vault{
+		{Name: "vw1", Server: "https://vw1.example.com", Email: "u1@e.com"},
+		{Name: "vw2", Server: "https://vw2.example.com", Email: "u2@e.com"},
+	}
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, vaults)
+
+	// First Esc skips vw1, should advance to vw2.
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mModel := mm.(tui.Model)
+	if !mModel.InSetup() {
+		t.Fatal("expected to still be in setup for vw2 after skipping vw1")
+	}
+	if !contains(mModel.SetupPrompt(), "vw2") {
+		t.Errorf("expected prompt for vw2, got: %s", mModel.SetupPrompt())
+	}
+
+	// Second Esc skips vw2, transitions to list.
+	mm2, _ := mm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mModel2 := mm2.(tui.Model)
+	if mModel2.InSetup() {
+		t.Fatal("expected to leave setup after skipping all vaults")
+	}
+}
+
+// TestSetupModalShowsErrorOnLoginFailure: receiving a VaultErrorMsg sets the
+// setup error message and stays in setup state for retry.
+func TestSetupModalShowsErrorOnLoginFailure(t *testing.T) {
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, sampleVaults())
+
+	mm, _ := m.Update(tui.VaultErrorMsg{Err: fmt.Errorf("invalid master password")})
+	mModel := mm.(tui.Model)
+
+	if !mModel.InSetup() {
+		t.Fatal("expected to stay in setup after login error")
+	}
+	if mModel.SetupError() == "" {
+		t.Fatal("expected non-empty setup error after login failure")
+	}
+	if !contains(mModel.SetupError(), "invalid master password") {
+		t.Errorf("expected error to mention 'invalid master password', got: %s", mModel.SetupError())
+	}
+	// Password should be cleared for retry.
+	if mModel.SetupPassword() != "" {
+		t.Errorf("expected password cleared after error, got %q", mModel.SetupPassword())
+	}
+}
+
+// TestSetupModalVaultReadyTransitionsToList: receiving VaultReadyMsg transitions
+// to list state with a non-nil vault client.
+func TestSetupModalVaultReadyTransitionsToList(t *testing.T) {
+	m := tui.NewWithSetup(sampleList(), tui.Deps{}, sampleVaults())
+
+	// Simulate a successful login by sending VaultReadyMsg with a fake source.
+	mm, _ := m.Update(tui.VaultReadyMsg{Source: &vaultadapter.Source{}})
+	mModel := mm.(tui.Model)
+
+	if mModel.InSetup() {
+		t.Fatal("expected to leave setup after VaultReadyMsg")
+	}
+	if mModel.VaultClient() == nil {
+		t.Fatal("expected non-nil vault client after successful login")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		(len(s) > 0 && len(substr) > 0 && indexOf(s, substr) >= 0))
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }

@@ -42,6 +42,9 @@ var (
 )
 
 func renderView(m Model) string {
+	if m.st == stateSetup {
+		return renderSetup(m)
+	}
 	if m.st == stateQuitModal {
 		content := "Quit WardenSSH?\n\n" +
 			"[k] Kill all sessions & quit (default)\n" +
@@ -102,4 +105,34 @@ func renderView(m Model) string {
 	sb.WriteString("\n " + scopeStyle.Render("[↑/↓] navigate  [Enter] connect  [Tab] scope  [q] quit"))
 
 	return sb.String()
+}
+
+// setupTitleStyle is the header for the vault unlock modal.
+var setupTitleStyle = lipgloss.NewStyle().
+	Bold(true).
+	Foreground(lipgloss.Color("205")).
+	MarginBottom(1)
+
+// setupErrorStyle renders login errors in red.
+var setupErrorStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("196")).
+	Bold(true)
+
+// renderSetup draws the vault unlock modal.
+func renderSetup(m Model) string {
+	prompt := m.SetupPrompt()
+	var sb strings.Builder
+	sb.WriteString(setupTitleStyle.Render("WardenSSH — Vault Unlock"))
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf(" Enter master password for %s\n", prompt))
+	sb.WriteString(fmt.Sprintf(" Password: %s\n", m.SetupInputView()))
+
+	if m.setupLoggingIn {
+		sb.WriteString("\n " + scopeStyle.Render("Logging in..."))
+	} else if m.setupError != "" {
+		sb.WriteString("\n " + setupErrorStyle.Render("Error: "+m.setupError))
+	}
+
+	sb.WriteString("\n " + scopeStyle.Render("[Enter] unlock  [Esc] skip vault"))
+	return modalBoxStyle.Render(sb.String())
 }
