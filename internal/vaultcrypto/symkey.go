@@ -19,10 +19,11 @@ func StretchKeys(masterKey []byte) (encKey, macKey []byte) {
 	return hkdfSha256(masterKey, []byte("enc"), 32), hkdfSha256(masterKey, []byte("mac"), 32)
 }
 
-// hkdfSha256 expands a master PRK into `length` bytes using HKDF-SHA256 with
-// a zero salt and the given info. BitWarden uses these exact parameters.
+// hkdfSha256 expands a master PRK into `length` bytes using HKDF-Expand
+// (RFC 5869 §2.3 only — NO extract step). BitWarden's hkdfExpand uses this
+// exact variant: the master key is used directly as the PRK, with no salt.
 func hkdfSha256(prk, info []byte, length int) []byte {
-	r := hkdf.New(sha256.New, prk, make([]byte, 32), info)
+	r := hkdf.Expand(sha256.New, prk, info)
 	out := make([]byte, length)
 	_, _ = r.Read(out)
 	return out

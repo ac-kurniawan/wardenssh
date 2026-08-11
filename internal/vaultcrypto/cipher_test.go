@@ -46,13 +46,18 @@ func TestDecryptRejectsBadMAC(t *testing.T) {
 	plain := []byte("tamper-me")
 	ct, _ := vaultcrypto.Encrypt(encKey, macKey, plain)
 
-	// Flip the last byte of the b64 payload (which lands in the HMAC tail).
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(ct, "2."))
-	if err != nil {
-		t.Fatalf("decode ct: %v", err)
+	// Flip the last byte of the MAC (the third pipe-separated part).
+	parts := strings.Split(strings.TrimPrefix(ct, "2."), "|")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 pipe parts, got %d", len(parts))
 	}
-	raw[len(raw)-1] ^= 0x01
-	tampered := "2." + base64.StdEncoding.EncodeToString(raw)
+	macBytes, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("decode mac: %v", err)
+	}
+	macBytes[len(macBytes)-1] ^= 0x01
+	parts[2] = base64.StdEncoding.EncodeToString(macBytes)
+	tampered := "2." + strings.Join(parts, "|")
 
 	if _, err := vaultcrypto.Decrypt(encKey, macKey, tampered); err == nil {
 		t.Error("Decrypt with tampered MAC: want error, got nil (MAC not validated)")

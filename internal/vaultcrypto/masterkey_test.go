@@ -1,61 +1,13 @@
-// Package vaultcrypto implements the BitWarden Password Manager client-side
-// crypto needed to authenticate to a VaultWarden/BitWarden server and decrypt
-// vault items (Subsystem 2 / Spike #2, see .local/plan.md). The chain:
+// Package vaultcrypto tests for master key + auth hash derivation.
 //
-//   - Master Key derivation: PBKDF2-HMAC-SHA256(password, salt=email, iterations)
-//     or Argon2id(...) — determined by the server's /prelogin response.
-//   - Stretched keys (HKDF-SHA256): encKey=HKDF(masterKey, "enc"),
-//     macKey=HKDF(masterKey, "mac") — used to decrypt the Protected Symmetric
-//     Key returned by /identity/connect/token.
-//   - Symmetric key = (symEncKey 32B || symMacKey 32B), 64 bytes total.
-//   - Auth hash: PBKDF2-HMAC-SHA256(password, masterKey, 1) sent to the token
-//     endpoint as the `password` field.
-//   - Encrypted-string format "2.<b64(iv||ciphertext||hmac)>" with
-//     AES-256-CBC + HMAC-SHA256 (type 2). Type "0." is the XOR legacy single-
-//     byte-key scheme (used for the protected key in some legacy flows).
-//   - SSH-Key items: each sensitive field (PrivateKey, Passphrase, ...) is an
-//     encrypted string under the item's key (the user's symmetric key, or an
-//     organization key for shared items). Custom fields (host/user/port/...)
-//     are encrypted strings too.
-//
-// All values verified byte-identical against `bw` CLI decrypt of the same
-// vault item (Spike #2 success criterion).
+// See masterkey.go for the function implementations and the package doc
+// (cipher.go) for the full BitWarden crypto chain.
 package vaultcrypto
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"testing"
-
-	"golang.org/x/crypto/pbkdf2"
 )
-
-// DeriveMasterKeyPBKDF2 derives the master key from the user's master password
-// and email (lowercased) using PBKDF2-HMAC-SHA256. kdfIterations is taken from
-// the server's /prelogin response. Returns a 32-byte key.
-func DeriveMasterKeyPBKDF2(password, email string, kdfIterations int) []byte {
-	return pbkdf2.Key([]byte(password), []byte(lower(email)), kdfIterations, 32, sha256.New)
-}
-
-// lower is a tiny helper so callers can see what the salt is.
-func lower(s string) string {
-	out := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
-}
-
-// DeriveAuthHash computes the master password hash sent to
-// /identity/connect/token (grant_type=password) as the `password` field. It is
-// PBKDF2-HMAC-SHA256(password, masterKey, 1, 32) -> base64-encoded by callers.
-func DeriveAuthHash(password string, masterKey []byte) []byte {
-	return pbkdf2.Key([]byte(password), masterKey, 1, 32, sha256.New)
-}
 
 // TestDeriveMasterKeyPBKDF2KnownVector verifies the master-key derivation
 // against the well-known PBKDF2-HMAC-SHA256 test vector (RFC-style reference),

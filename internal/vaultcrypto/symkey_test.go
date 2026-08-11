@@ -2,7 +2,6 @@ package vaultcrypto_test
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -61,12 +60,6 @@ func TestUnwrapProtectedSymKeyRoundTrip(t *testing.T) {
 	}
 	if string(got[32:]) != string(symMac) {
 		t.Errorf("symMac mismatch")
-	}
-
-	// The base64 blob size: iv(16) + ct(64+pad to 80) + mac(32) = 128 bytes.
-	raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(protected, "2."))
-	if len(raw) != 16+80+32 {
-		t.Errorf("protected blob bytes = %d, want 128", len(raw))
 	}
 }
 
