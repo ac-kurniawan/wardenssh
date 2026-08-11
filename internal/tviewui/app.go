@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -14,6 +15,8 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/session"
 	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
 )
 
 // Deps holds injected dependencies for the TUI app.
@@ -42,9 +45,12 @@ type App struct {
 	right   *tview.Flex
 	overlay *tview.Pages
 
-	mu      sync.Mutex
-	inSetup bool
-	inQuit  bool
+	mu          sync.Mutex
+	inSetup     bool
+	inQuit      bool
+	syncStarted bool
+	syncTicker  *time.Ticker
+	stopSync    chan struct{}
 }
 
 // New creates the TUI app. If vaults is non-empty, it starts in setup mode.
@@ -64,6 +70,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	// Wire host pane callbacks.
 	a.hostPane.SetOnConnect(a.handleConnect)
 	a.hostPane.SetOnScopeChange(func() {})
+	a.hostPane.SetOnRefresh(a.TriggerSync)
 
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -98,6 +105,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 			a.overlay.RemovePage("setup")
 			a.hostPane.Refresh()
 			a.app.SetFocus(a.hostPane.Primitive())
+			a.StartBackgroundSync(5 * time.Minute)
 		})
 		a.setupModal.SetOnSkip(func() {
 			a.inSetup = false
@@ -116,6 +124,9 @@ func (a *App) Run() error {
 	return a.app.Run()
 }
 
+// HostPane returns the host list pane.
+func (a *App) HostPane() *HostListPane { return a.hostPane }
+
 // InSetup reports whether the setup modal is active.
 func (a *App) InSetup() bool { return a.inSetup }
 
@@ -129,6 +140,98 @@ func (a *App) SkipSetup() {
 	}
 	a.inSetup = false
 	a.overlay.RemovePage("setup")
+}
+
+// TriggerSync performs vault sync in a background goroutine and updates the
+// host pane sync status header and host entries upon completion.
+func (a *App) TriggerSync() {
+	go func() {
+		if a.deps.VaultCli == nil {
+			return
+		}
+
+		var err error
+		if vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client); ok {
+			var vc *vaultclient.Client
+			if len(a.vaults) > 0 {
+				vc = vaultclientNew(a.vaults[0].Server)
+			}
+			err = vAdapterClient.SyncAll(vc)
+			if err == nil {
+				for _, src := range vAdapterClient.Sources() {
+					items, itemErr := src.Items()
+					if itemErr == nil {
+						var entries []hosts.Entry
+						for _, it := range items {
+							entries = append(entries, hosts.Entry{
+								Alias:     it.Name,
+								HostName:  it.HostName,
+								User:      it.User,
+								Port:      it.Port,
+								ProxyJump: it.ProxyJump,
+								Source:    src.Name(),
+							})
+						}
+						a.hostList.ReplaceVaultEntries(src.Name(), entries)
+					}
+				}
+			}
+		} else {
+			err = a.deps.VaultCli.Sync()
+		}
+
+		var status string
+		if err != nil {
+			status = "[red]Sync failed (offline)[-]"
+		} else {
+			status = fmt.Sprintf("Synced %s", time.Now().Format("15:04"))
+		}
+
+		a.hostPane.SetSyncStatus(status)
+		a.hostPane.Refresh()
+		a.app.QueueUpdateDraw(func() {})
+	}()
+}
+
+// StartBackgroundSync starts a background ticker with the given interval that triggers vault sync.
+func (a *App) StartBackgroundSync(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	a.mu.Lock()
+	if a.syncStarted {
+		a.mu.Unlock()
+		return
+	}
+	a.syncStarted = true
+	ticker := time.NewTicker(interval)
+	a.syncTicker = ticker
+	a.stopSync = make(chan struct{})
+	a.mu.Unlock()
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				a.TriggerSync()
+			case <-a.stopSync:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+// StopBackgroundSync stops the background sync ticker if running.
+func (a *App) StopBackgroundSync() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.syncStarted {
+		if a.stopSync != nil {
+			close(a.stopSync)
+		}
+		a.syncStarted = false
+	}
 }
 
 // RequestQuit returns true if the app should quit immediately (no live
@@ -258,3 +361,4 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 	}
 	return event
 }
+
