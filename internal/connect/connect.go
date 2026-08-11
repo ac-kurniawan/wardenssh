@@ -99,6 +99,33 @@ func Connect(entry hosts.Entry, sessionID string, vc vault.Client, c *Connector)
 	return Result{Session: sess, Err: err}
 }
 
+// PrepareAgentKey decrypts the private key for a vault-sourced entry and loads it
+// into the agent keyring for sessionID. No-op for file-sourced entries.
+func PrepareAgentKey(entry hosts.Entry, sessionID string, vc vault.Client, agent *sshagent.Keyring) error {
+	if entry.Source == "file" {
+		return nil
+	}
+	if vc == nil || agent == nil {
+		return fmt.Errorf("prepare key: vault client or agent keyring is nil")
+	}
+	item, src, err := findVaultItem(vc, entry)
+	if err != nil {
+		return fmt.Errorf("find vault item: %w", err)
+	}
+	decrypted, err := src.DecryptPrivateKey(item, "")
+	if err != nil {
+		return fmt.Errorf("decrypt private key: %w", err)
+	}
+	priv, err := ssh.ParseRawPrivateKey(decrypted)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+	if _, err := agent.Load(priv, entry.Alias, sessionID); err != nil {
+		return fmt.Errorf("agent load: %w", err)
+	}
+	return nil
+}
+
 // SSHArgv builds the ssh command-line arguments for a host entry. The agent
 // pipe is passed via SSH_AUTH_SOCK (set as env by the session manager caller).
 // For vault-sourced entries, NO -i is passed (ssh uses the agent). For
