@@ -39,6 +39,10 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 			p.Refresh()
 		})
 
+	p.filter.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		return p.handleFilterKey(event)
+	})
+
 	p.list.ShowSecondaryText(false).
 		SetBorder(true).
 		SetTitle(" Hosts ").
@@ -78,6 +82,47 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		AddItem(p.filter, 1, 0, true).
 		AddItem(p.list, 0, 1, false)
 	return p
+}
+
+func (p *HostListPane) handleFilterKey(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Key() {
+	case tcell.KeyDown:
+		cur := p.list.GetCurrentItem()
+		if cur < p.list.GetItemCount()-1 {
+			p.list.SetCurrentItem(cur + 1)
+		}
+		return nil
+	case tcell.KeyUp:
+		cur := p.list.GetCurrentItem()
+		if cur > 0 {
+			p.list.SetCurrentItem(cur - 1)
+		}
+		return nil
+	case tcell.KeyEnter:
+		p.TriggerConnect()
+		return nil
+	case tcell.KeyTab:
+		p.TabNext()
+		if p.onScope != nil {
+			p.onScope()
+		}
+		return nil
+	case tcell.KeyCtrlR:
+		p.TriggerRefresh()
+		return nil
+	case tcell.KeyEscape:
+		if p.filter.GetText() != "" {
+			p.SetFilter("")
+			p.Refresh()
+			return nil
+		}
+	}
+	return event
+}
+
+// HandleFilterKey simulates filter key input (used in tests).
+func (p *HostListPane) HandleFilterKey(event *tcell.EventKey) *tcell.EventKey {
+	return p.handleFilterKey(event)
 }
 
 // Primitive returns the tview primitive for layout embedding.

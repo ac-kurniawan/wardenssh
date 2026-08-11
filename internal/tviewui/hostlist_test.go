@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 )
@@ -94,6 +96,34 @@ func TestHostListPaneRefreshCallbackTriggered(t *testing.T) {
 	pane.TriggerRefresh()
 	if !refreshed {
 		t.Fatal("expected OnRefresh callback after TriggerRefresh")
+	}
+}
+
+func TestFilterInputCaptureNavigatesAndConnects(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.Refresh()
+
+	// Initially entry index 0 (prod-db-01) is selected.
+	entry, _ := pane.SelectedEntry()
+	if entry.Alias != "prod-db-01" {
+		t.Fatalf("expected initial selected entry prod-db-01, got %s", entry.Alias)
+	}
+
+	// Move down via filter input capture.
+	pane.HandleFilterKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	entry, _ = pane.SelectedEntry()
+	if entry.Alias != "web-02" {
+		t.Errorf("expected selected entry after KeyDown web-02, got %s", entry.Alias)
+	}
+
+	// Connect on Enter via filter input capture.
+	var connected hosts.Entry
+	pane.SetOnConnect(func(e hosts.Entry) {
+		connected = e
+	})
+	pane.HandleFilterKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if connected.Alias != "web-02" {
+		t.Errorf("expected connect callback for web-02 on Enter, got %s", connected.Alias)
 	}
 }
 
