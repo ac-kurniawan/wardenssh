@@ -92,6 +92,12 @@ func renderView(m Model) string {
 		}
 	}
 
+	// Status / Error line
+	if m.errStatus != "" {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+		sb.WriteString("\n " + errStyle.Render("Error: "+m.errStatus))
+	}
+
 	// Footer / Keybindings summary
 	sb.WriteString("\n " + scopeStyle.Render("[↑/↓] navigate  [Enter] connect  [Tab] scope  [q] quit"))
 

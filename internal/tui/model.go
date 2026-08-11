@@ -7,18 +7,32 @@
 package tui
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ac-kurniawan/wardenssh/internal/connect"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
+	"github.com/ac-kurniawan/wardenssh/internal/session"
+	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
+	"github.com/ac-kurniawan/wardenssh/internal/vault"
 )
 
 // ConnectMsg is emitted by Enter on a selected entry, carrying the entry the
-// session manager should open. The model does not itself spawn ssh.
+// session manager should open.
 type ConnectMsg struct {
 	Entry hosts.Entry
 }
 
-// Connect intent — handled by the session manager, returning nil.
+// SessionExitedMsg is emitted when a spawned session exits.
+type SessionExitedMsg struct {
+	Alias     string
+	Source    string
+	SessionID string
+}
+
+// Connect intent — handled by the model or test.
 func newConnectCmd(e hosts.Entry) tea.Cmd {
 	return func() tea.Msg { return ConnectMsg{Entry: e} }
 }
@@ -30,6 +44,14 @@ const (
 	stateQuitModal
 )
 
+// Deps holds injected dependencies for the TUI model.
+type Deps struct {
+	Agent     *sshagent.Keyring
+	Mgr       *session.Manager
+	VaultCli  vault.Client
+	AgentPipe string
+}
+
 // Model is the Bubble Tea model for the launcher. It is a value type with a
 // pointer-to-List so filter/scope mutations are visible across copies.
 type Model struct {
@@ -38,11 +60,29 @@ type Model struct {
 	cursor     int
 	st         state
 	lastAction string
+	errStatus  string
+
+	agent     *sshagent.Keyring
+	mgr       *session.Manager
+	vaultCli  vault.Client
+	agentPipe string
 }
 
 // New returns the initial launcher model over the given host list.
 func New(h *hosts.List) Model {
 	return Model{hostList: h, st: stateList}
+}
+
+// NewWithDeps returns the launcher model with injected session/agent dependencies.
+func NewWithDeps(h *hosts.List, deps Deps) Model {
+	return Model{
+		hostList:  h,
+		st:        stateList,
+		agent:     deps.Agent,
+		mgr:       deps.Mgr,
+		vaultCli:  deps.VaultCli,
+		agentPipe: deps.AgentPipe,
+	}
 }
 
 // Init satisfies tea.Model.
@@ -51,6 +91,36 @@ func (m Model) Init() tea.Cmd { return nil }
 // Update satisfies tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ConnectMsg:
+		if m.mgr == nil || m.agent == nil {
+			// No deps injected (e.g. basic unit test); intent was emitted.
+			return m, nil
+		}
+		sessID := generateSessionID()
+		res := connect.Connect(msg.Entry, sessID, m.vaultCli, &connect.Connector{
+			Agent: m.agent,
+			Mgr:   m.mgr,
+		})
+		if res.Err != nil {
+			m.errStatus = res.Err.Error()
+			return m, nil
+		}
+		m.hostList.MarkLive(msg.Entry.Alias, msg.Entry.Source)
+		sess := res.Session
+		return m, func() tea.Msg {
+			<-sess.Done()
+			return SessionExitedMsg{
+				Alias:     msg.Entry.Alias,
+				Source:    msg.Entry.Source,
+				SessionID: sessID,
+			}
+		}
+	case SessionExitedMsg:
+		if m.agent != nil {
+			m.agent.ReleaseSession(msg.SessionID)
+		}
+		m.hostList.MarkDead(msg.Alias, msg.Source)
+		return m, nil
 	case tea.KeyMsg:
 		switch m.st {
 		case stateList:
@@ -60,6 +130,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func generateSessionID() string {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // View satisfies tea.Model. The real rendering (Lip Gloss styling + badges +

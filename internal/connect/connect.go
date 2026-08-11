@@ -80,8 +80,9 @@ func Connect(entry hosts.Entry, sessionID string, vc vault.Client, c *Connector)
 	// 3. Build ssh argv.
 	argv := SSHArgv(entry, AgentPipePath())
 
-	// 4. Spawn ssh via the session manager.
-	sess, err := c.Mgr.Spawn(entry.Alias, entry.Source, argv)
+	// 4. Spawn ssh via the session manager with SSH_AUTH_SOCK.
+	env := EnvForAgent(AgentPipePath())
+	sess, err := c.Mgr.SpawnWithEnv(entry.Alias, entry.Source, argv, env)
 	return Result{Session: sess, Err: err}
 }
 

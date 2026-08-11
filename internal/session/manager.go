@@ -23,8 +23,13 @@ func NewManager() *Manager {
 
 // Spawn starts a new session and makes it the active one. The id is generated.
 func (m *Manager) Spawn(alias, source string, argv []string) (*Session, error) {
+	return m.SpawnWithEnv(alias, source, argv, nil)
+}
+
+// SpawnWithEnv starts a new session with custom environment variables.
+func (m *Manager) SpawnWithEnv(alias, source string, argv []string, env []string) (*Session, error) {
 	id := newID()
-	s, err := Start(id, alias, source, argv)
+	s, err := StartWithEnv(id, alias, source, argv, env)
 	if err != nil {
 		return nil, err
 	}

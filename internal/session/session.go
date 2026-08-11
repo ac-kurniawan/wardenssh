@@ -29,6 +29,11 @@ const RingCapacity = 1 << 16 // 64 KiB
 // Start spawns a child process (argv[0] + argv[1:]) attached to a fresh PTY
 // and begins draining its output into a ring buffer.
 func Start(id, alias, source string, argv []string) (*Session, error) {
+	return StartWithEnv(id, alias, source, argv, nil)
+}
+
+// StartWithEnv is like Start but appends env key-value pairs to the child's environment.
+func StartWithEnv(id, alias, source string, argv []string, env []string) (*Session, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("session: empty argv")
 	}
@@ -37,6 +42,9 @@ func Start(id, alias, source string, argv []string) (*Session, error) {
 		return nil, err
 	}
 	c := p.Command(argv[0], argv[1:]...)
+	if len(env) > 0 {
+		c.Env = append(c.Env, env...)
+	}
 	if err := c.Start(); err != nil {
 		_ = p.Close()
 		return nil, err

@@ -181,6 +181,26 @@ func TestCtrlCActsLikeQuit(t *testing.T) {
 	})
 }
 
+// TestSessionExitedMsgClearsLiveFlag: receiving SessionExitedMsg marks the host dead.
+func TestSessionExitedMsgClearsLiveFlag(t *testing.T) {
+	h := sampleList()
+	h.MarkLive("prod-db-01", "file")
+	m := tui.New(h)
+
+	mm, _ := m.Update(tui.SessionExitedMsg{
+		Alias:     "prod-db-01",
+		Source:    "file",
+		SessionID: "s123",
+	})
+
+	mModel := mm.(tui.Model)
+	for _, e := range mModel.List().All() {
+		if e.Alias == "prod-db-01" && e.Live {
+			t.Errorf("expected prod-db-01 to be dead after SessionExitedMsg")
+		}
+	}
+}
+
 func anyLive(l *hosts.List) bool {
 	for _, e := range l.Visible() {
 		if e.Live {
