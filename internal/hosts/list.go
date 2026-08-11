@@ -90,6 +90,15 @@ func (l *List) Visible() []Entry {
 	return out
 }
 
+// All returns every entry regardless of the current scope/filter — used by the
+// TUI to detect any live session across all scopes for the quit-confirmation
+// modal (Q31/C) and by kill-all to clear all live flags.
+func (l *List) All() []Entry {
+	out := make([]Entry, len(l.entries))
+	copy(out, l.entries)
+	return out
+}
+
 // MarkLive flags the entry (matched by alias + source) as having an open
 // session (green dot). No-op if not found.
 func (l *List) MarkLive(alias, source string) {
