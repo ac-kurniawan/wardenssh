@@ -86,7 +86,6 @@ type fakeClient struct {
 }
 
 func (f *fakeClient) Sources() []vault.Source { return f.sources }
-func (f *fakeClient) Sync() error             { return nil }
 
 func TestFindVaultItem(t *testing.T) {
 	fc := &fakeClient{
