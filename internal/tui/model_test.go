@@ -418,3 +418,60 @@ func indexOf(s, substr string) int {
 	}
 	return -1
 }
+
+// --- Session pane tests ---
+
+// TestSessionEscapeReturnsToList: pressing Escape in the session pane
+// transitions back to the host list.
+func TestSessionEscapeReturnsToList(t *testing.T) {
+	m := tui.New(sampleList())
+	m.EnterSessionForTest()
+
+	if !m.InSession() {
+		t.Fatal("expected to be in session state after EnterSessionForTest")
+	}
+
+	mm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	mModel := mm.(tui.Model)
+	if mModel.InSession() {
+		t.Fatal("expected to leave session state after Escape")
+	}
+	if !mModel.InList() {
+		t.Fatal("expected to be back in list state after Escape")
+	}
+}
+
+// TestSessionPollMsgKeepsPolling: SessionPollMsg in session state returns
+// another poll cmd to keep refreshing PTY output.
+func TestSessionPollMsgKeepsPolling(t *testing.T) {
+	m := tui.New(sampleList())
+	m.EnterSessionForTest()
+
+	mm, cmd := m.Update(tui.SessionPollMsg{})
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd (continue polling) in session state")
+	}
+	mModel := mm.(tui.Model)
+	if !mModel.InSession() {
+		t.Fatal("expected to stay in session state on poll")
+	}
+}
+
+// TestSessionExitedMsgReturnsToList: when the session exits, the model
+// transitions back to the list state.
+func TestSessionExitedMsgReturnsToList(t *testing.T) {
+	m := tui.New(sampleList())
+	m.EnterSessionForTest()
+
+	mm, _ := m.Update(tui.SessionExitedMsg{
+		Alias:  "prod-db-01",
+		Source: "file",
+	})
+	mModel := mm.(tui.Model)
+	if mModel.InSession() {
+		t.Fatal("expected to leave session after SessionExitedMsg")
+	}
+	if !mModel.InList() {
+		t.Fatal("expected to be in list state after session exit")
+	}
+}

@@ -45,6 +45,9 @@ func renderView(m Model) string {
 	if m.st == stateSetup {
 		return renderSetup(m)
 	}
+	if m.st == stateSession {
+		return renderSession(m)
+	}
 	if m.st == stateQuitModal {
 		content := "Quit WardenSSH?\n\n" +
 			"[k] Kill all sessions & quit (default)\n" +
@@ -117,6 +120,23 @@ var setupTitleStyle = lipgloss.NewStyle().
 var setupErrorStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.Color("196")).
 	Bold(true)
+
+// renderSession draws the SSH session pane — the PTY output with a footer.
+func renderSession(m Model) string {
+	var sb strings.Builder
+	buf := m.ActiveSessionBuffer()
+	if len(buf) > 0 {
+		sb.Write(buf)
+		// Trim trailing newlines for clean display, then add our footer.
+		s := sb.String()
+		s = strings.TrimRight(s, "\n")
+		sb.Reset()
+		sb.WriteString(s)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(scopeStyle.Render("[Esc] back to list"))
+	return sb.String()
+}
 
 // renderSetup draws the vault unlock modal.
 func renderSetup(m Model) string {

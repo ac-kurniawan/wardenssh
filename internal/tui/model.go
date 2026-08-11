@@ -81,6 +81,7 @@ const (
 	stateList state = iota
 	stateQuitModal
 	stateSetup
+	stateSession
 )
 
 // Deps holds injected dependencies for the TUI model.
@@ -115,6 +116,9 @@ type Model struct {
 	setupError     string
 	setupSources   []*vaultadapter.Source
 	setupLoggingIn bool
+
+	// Session pane state
+	activeSession *session.Session
 }
 
 // New returns the initial launcher model over the given host list.
@@ -162,6 +166,9 @@ func NewWithSetup(h *hosts.List, deps Deps, vaults []config.Vault) Model {
 // SyncTickMsg triggers a background vault sync check.
 type SyncTickMsg struct{}
 
+// SessionPollMsg triggers a refresh of the session PTY output.
+type SessionPollMsg struct{}
+
 // SyncResultMsg carries the outcome of a background vault sync attempt.
 type SyncResultMsg struct {
 	VaultName string
@@ -171,6 +178,14 @@ type SyncResultMsg struct {
 func syncTickCmd() tea.Cmd {
 	return tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
 		return SyncTickMsg{}
+	})
+}
+
+// sessionPollCmd fires a SessionPollMsg every 16ms (~60fps) to refresh the
+// session's PTY output in the TUI view while the session pane is active.
+func sessionPollCmd() tea.Cmd {
+	return tea.Tick(16*time.Millisecond, func(time.Time) tea.Msg {
+		return SessionPollMsg{}
 	})
 }
 
@@ -219,12 +234,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				SessionID: sessID,
 			}
 		}
-	case SessionExitedMsg:
-		if m.agent != nil {
-			m.agent.ReleaseSession(msg.SessionID)
-		}
-		m.hostList.MarkDead(msg.Alias, msg.Source)
-		return m, nil
 	case SyncTickMsg:
 		if m.vaultCli == nil {
 			return m, nil
@@ -242,6 +251,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errStatus = "sync fail: " + msg.Err.Error()
 		}
 		return m, nil
+	case SessionPollMsg:
+		// Stay in session pane and keep polling if session is active.
+		if m.st == stateSession {
+			return m, sessionPollCmd()
+		}
+		return m, nil
+	case SessionExitedMsg:
+		if m.agent != nil {
+			m.agent.ReleaseSession(msg.SessionID)
+		}
+		m.hostList.MarkDead(msg.Alias, msg.Source)
+		m.activeSession = nil
+		m.st = stateList
+		return m, nil
 	case tea.KeyMsg:
 		switch m.st {
 		case stateSetup:
@@ -250,6 +273,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateList(msg)
 		case stateQuitModal:
 			return m.updateQuitModal(msg)
+		case stateSession:
+			return m.updateSession(msg)
 		}
 	}
 	return m, nil
@@ -259,6 +284,59 @@ func generateSessionID() string {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
+}
+
+// --- session state ---
+
+// updateSession handles keystrokes while the SSH session pane is active.
+// Most keystrokes are forwarded to the session's PTY (stdin). Escape
+// returns to the host list (the session keeps running in the background).
+func (m Model) updateSession(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.activeSession == nil {
+		m.st = stateList
+		return m, nil
+	}
+	// Ctrl+C is forwarded to the PTY (not interpreted as quit).
+	// Escape returns to the host list (session stays alive in background).
+	if msg.Type == tea.KeyEsc {
+		m.st = stateList
+		return m, nil
+	}
+	// Forward the keystroke to the PTY stdin.
+	var input []byte
+	if msg.Type == tea.KeyRunes {
+		input = []byte(string(msg.Runes))
+	} else {
+		// Map special keys to their terminal escape sequences.
+		switch msg.Type {
+		case tea.KeyEnter:
+			input = []byte{'\r'}
+		case tea.KeyBackspace:
+			input = []byte{0x7f}
+		case tea.KeyUp:
+			input = []byte("\x1b[A")
+		case tea.KeyDown:
+			input = []byte("\x1b[B")
+		case tea.KeyRight:
+			input = []byte("\x1b[C")
+		case tea.KeyLeft:
+			input = []byte("\x1b[D")
+		case tea.KeyTab:
+			input = []byte{'\t'}
+		case tea.KeyCtrlC:
+			input = []byte{0x03}
+		case tea.KeyCtrlD:
+			input = []byte{0x04}
+		case tea.KeyCtrlZ:
+			input = []byte{0x1a}
+		default:
+			return m, nil
+		}
+	}
+	if len(input) > 0 {
+		_, _ = m.activeSession.Write(input)
+	}
+	return m, nil
 }
 
 // --- setup state ---
@@ -389,6 +467,25 @@ func (m Model) LastAction() string { return m.lastAction }
 
 // InSetup reports whether the vault unlock modal is active.
 func (m Model) InSetup() bool { return m.st == stateSetup }
+
+// InSession reports whether the SSH session pane is active.
+func (m Model) InSession() bool { return m.st == stateSession }
+
+// InList reports whether the host list is active.
+func (m Model) InList() bool { return m.st == stateList }
+
+// ActiveSessionBuffer returns the PTY output of the active session (for view).
+func (m Model) ActiveSessionBuffer() []byte {
+	if m.activeSession == nil {
+		return nil
+	}
+	return m.activeSession.Buffer()
+}
+
+// EnterSessionForTest forces the model into session state for testing.
+func (m *Model) EnterSessionForTest() {
+	m.st = stateSession
+}
 
 // SetupPrompt returns the prompt text for the current vault being unlocked.
 func (m Model) SetupPrompt() string {
