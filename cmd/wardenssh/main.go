@@ -1,13 +1,10 @@
 // Command wardenssh is the WardenSSH launcher entrypoint. v0 wiring:
 //   - load ~/.ssh/wardenssh.json (non-secret config; first run -> defaults)
 //   - build the merged host list from ~/.ssh/config (file source) and the
-//     vault client (STUB until a live VaultWarden verifies crypto — the fake
-//     client produces no items, so v0 runs file-source only)
-//   - start the in-process ssh-agent on a platform pipe (ready for real key
-//     loads once the vault client ships) and run the Bubble Tea launcher
-//
-// Real vault authentication/decryption, plus the actual ssh suspend-and-exec
-// on ConnectMsg, are wired in later commits against a live sshd target.
+//     vault client (real vault auth via TUI setup modal, or FakeClient when
+//     no vaults are configured)
+//   - start the in-process ssh-agent on a platform pipe and run the Bubble
+//     Tea launcher
 package main
 
 import (
@@ -44,20 +41,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	_ = cfg // used to drive vault client + custom_fields
 
 	// File source: ~/.ssh/config (read-only in v0). Missing file -> nil reader.
 	sshConfigPath := filepath.Join(filepath.Dir(cfgPath), "config")
 	var sshConfigReader io.Reader
 	if data, err := os.ReadFile(sshConfigPath); err == nil {
 		sshConfigReader = bytes.NewReader(data)
-	}
-
-	var vc vault.Client = vault.NewFakeClient()
-
-	hostList, err := app.BuildHostList(sshConfigReader, vc)
-	if err != nil {
-		return fmt.Errorf("build host list: %w", err)
 	}
 
 	// 1. Initialize agent keyring + listener.
@@ -74,15 +63,36 @@ func run() error {
 	mgr := session.NewManager()
 
 	deps := tui.Deps{
-		Agent:     kr,
-		Mgr:       mgr,
-		VaultCli:  vc,
-		AgentPipe: pipePath,
+		Agent:        kr,
+		Mgr:          mgr,
+		AgentPipe:    pipePath,
+		CustomFields: cfg.CustomFields,
 	}
 
-	p := tea.NewProgram(tui.NewWithDeps(hostList, deps), tea.WithAltScreen())
+	// 3. Build the initial host list (file-source only; vault hosts are
+	//    merged in after the setup modal completes via VaultReadyMsg).
+	hostList, err := app.BuildHostList(sshConfigReader, nil)
+	if err != nil {
+		return fmt.Errorf("build host list: %w", err)
+	}
+
+	// 4. Launch the TUI. If vaults are configured, start in setup mode
+	//    (master password prompt). Otherwise, use FakeClient (file-only).
+	var model tea.Model
+	if len(cfg.Vaults) > 0 {
+		model = tui.NewWithSetup(hostList, deps, cfg.Vaults)
+	} else {
+		deps.VaultCli = vault.NewFakeClient()
+		model = tui.NewWithDeps(hostList, deps)
+	}
+
+	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("run tui: %w", err)
 	}
+
+	// 5. Best-effort memory wipe on exit (keys, passwords in RAM).
+	kr.Wipe()
+
 	return nil
 }
