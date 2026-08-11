@@ -270,6 +270,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agent.ReleaseSession(msg.SessionID)
 		}
 		m.hostList.MarkDead(msg.Alias, msg.Source)
+		// Capture the session's PTY output as the error message if the
+		// session exited — this lets the user see ssh's error output
+		// (e.g. "Permission denied (publickey)") in the status bar.
+		if m.activeSession != nil {
+			buf := m.activeSession.Buffer()
+			if len(buf) > 0 {
+				// Trim terminal escape sequences for a cleaner error message.
+				m.errStatus = string(buf)
+			}
+			if exitErr := m.activeSession.ExitErr(); exitErr != nil {
+				m.errStatus = exitErr.Error() + ": " + m.errStatus
+			}
+		}
 		m.activeSession = nil
 		m.st = stateList
 		return m, nil
