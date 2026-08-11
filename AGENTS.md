@@ -40,6 +40,32 @@ the one `bw` CLI uses. A native client must use a community lib or reimplement
 the crypto (PBKDF2/Argon2, HKDF, AES-256-CBC, HMAC, RSA key unwrap). See
 Spike #2.
 
+## Crypto Corrections (discovered during Spike #2)
+
+Three subtleties in the BitWarden Password Manager crypto that differ from
+naive reading of the spec — verified by MITM-capturing `bw` CLI's wire request
+and reading the jslib source:
+
+1. **Auth hash args are SWAPPED.** `hashPassword` calls
+   `pbkdf2(key.key, password)` — the master key is the PBKDF2 *password* input
+   and the master password string is the *salt*. NOT `PBKDF2(password, masterKey)`.
+2. **StretchKeys uses HKDF-Expand ONLY** (RFC 5869 §2.3), not full HKDF
+   (extract+expand). BitWarden's `hkdfExpand` passes the master key directly
+   as the PRK with no salt/extract step.
+3. **EncString type-2 is pipe-separated**: `2.<b64(iv)>|<b64(ct)>|<b64(mac)>`,
+   NOT one concatenated base64 blob. Type-0 (`0.<b64(iv||ct)>`) is AES-CBC
+   with no MAC (legacy Protected Key format).
+
+## VaultWarden Test Setup
+
+Spike #2 tests are gated behind `WARDENSSH_VAULTSPIKE=1` + `WARDENSSH_VW_EMAIL`
++ `WARDENSSH_VW_PASS` env vars (never hardcoded). To run:
+  1. `bw config server https://vw.server3.arcaku-labs.com`
+  2. `$env:WARDENSSH_VAULTSPIKE="1"; $env:WARDENSSH_VW_EMAIL="..."; $env:WARDENSSH_VW_PASS="..."`
+  3. `go test ./spike/vaultspike/ -v`
+The `bw` CLI (`npm install -g @bitwarden/cli`) is the byte-identical decrypt
+reference for the gold-standard SSH-Key item check.
+
 ## Development — Workflow (ENFORCED)
 
 - **TDD is mandatory.** Red-Green-Refactor for every change. Write a failing
