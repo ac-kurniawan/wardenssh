@@ -227,39 +227,44 @@ func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
 }
 
 // SyncResponse is the subset of /api/sync's JSON we consume. The full sync
-// payload is large; we only decode the Cipher (item) list.
+// payload is large; we only decode the Cipher (item) list. VaultWarden
+// returns camelCase keys at the top level (not wrapped in "Data", not
+// PascalCase) — confirmed by dumping /api/sync from a live instance.
 type SyncResponse struct {
 	Profile struct {
-		ID    string `json:"Id"`
-		Email string `json:"Email"`
-	} `json:"Profile"`
-	Ciphers []Cipher `json:"Ciphers"`
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	} `json:"profile"`
+	Ciphers []Cipher `json:"ciphers"`
 }
 
-// Cipher is a vault item as returned by /api/sync. SSH-Key items have
-// Type==4 (SshKey) in newer BitWarden; login items are Type==1.
+// Cipher is a vault item as returned by /api/sync or /api/ciphers.
+// SSH-Key items have Type==5 on VaultWarden; login items are Type==1.
 type Cipher struct {
-	ID     string `json:"Id"`
-	Name   string `json:"Name"`   // encrypted string
-	Type   int    `json:"Type"`   // 1=Login, 2=SecureNote, 3=Card, 4=Identity, 1000=SshKey (BitWarden SDK uses 4; VaultWarden may differ)
-	Notes  string `json:"Notes"`  // encrypted, optional
+	ID     string `json:"id"`
+	Name   string `json:"name"`  // encrypted string
+	Type   int    `json:"type"`  // 1=Login, 2=SecureNote, 3=Card, 4=Identity, 5=SshKey
+	Notes  string `json:"notes"` // encrypted, optional
 	SshKey *struct {
-		PrivateKey  string `json:"PrivateKey"`  // encrypted string
-		PublicKey   string `json:"PublicKey"`   // encrypted string
-		KeyFingerprint string `json:"KeyFingerprint"` // encrypted string
-		Passphrase  string `json:"Passphrase"`  // encrypted string, optional
-	} `json:"SshKey,omitempty"`
-	Fields []CustomField `json:"Fields,omitempty"`
+		PrivateKey     string `json:"privateKey"`
+		PublicKey      string `json:"publicKey"`
+		KeyFingerprint string `json:"keyFingerprint"`
+		Passphrase     string `json:"passphrase"`
+	} `json:"sshKey,omitempty"`
+	Fields []CustomField `json:"fields,omitempty"`
 }
 
 // CustomField is a name/value pair on a cipher (host/user/port/proxyjump live here).
 type CustomField struct {
-	Name  string `json:"Name"`  // encrypted string
-	Value string `json:"Value"` // encrypted string
-	Type  int    `json:"Type"`  // 0=Text, 1=Hidden, 2=Boolean
+	Name  string `json:"name"`  // encrypted string
+	Value string `json:"value"` // encrypted string
+	Type  int    `json:"type"`  // 0=Text, 1=Hidden, 2=Boolean
 }
 
 // Sync fetches the full vault. Requires an authenticated Session.
+// VaultWarden's /api/sync may return an empty ciphers array even when items
+// exist; in that case we fall back to /api/ciphers (which returns
+// {"data":[...]}) — the same endpoint `bw list items` uses.
 func (c *Client) Sync(s *Session) (*SyncResponse, error) {
 	req, _ := http.NewRequest(http.MethodGet, c.BaseURL+"/api/sync", nil)
 	req.Header.Set("Authorization", "Bearer "+s.AccessToken)
@@ -276,7 +281,38 @@ func (c *Client) Sync(s *Session) (*SyncResponse, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
 		return nil, fmt.Errorf("sync: decode: %w", err)
 	}
+
+	// Fall back to /api/ciphers if /api/sync returned no ciphers.
+	if len(sr.Ciphers) == 0 {
+		ciphers, err := c.fetchCiphers(s)
+		if err != nil {
+			return nil, err
+		}
+		sr.Ciphers = ciphers
+	}
 	return &sr, nil
+}
+
+// fetchCiphers calls GET /api/ciphers, which returns {"data":[...]}.
+func (c *Client) fetchCiphers(s *Session) ([]Cipher, error) {
+	req, _ := http.NewRequest(http.MethodGet, c.BaseURL+"/api/ciphers", nil)
+	req.Header.Set("Authorization", "Bearer "+s.AccessToken)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ciphers: status %d: %s", resp.StatusCode, string(raw))
+	}
+	var wrapper struct {
+		Data []Cipher `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+		return nil, fmt.Errorf("ciphers: decode: %w", err)
+	}
+	return wrapper.Data, nil
 }
 
 // DecryptField decrypts a BitWarden encrypted string under the session's

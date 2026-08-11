@@ -43,10 +43,10 @@ func TestSourceItemsDecryptsFieldsAndFiltersByHost(t *testing.T) {
 			ID:   "1",
 			Name: enc(t, sess, "prod-db-01"),
 			SshKey: &struct {
-				PrivateKey     string `json:"PrivateKey"`
-				PublicKey      string `json:"PublicKey"`
-				KeyFingerprint string `json:"KeyFingerprint"`
-				Passphrase     string `json:"Passphrase"`
+				PrivateKey     string `json:"privateKey"`
+				PublicKey      string `json:"publicKey"`
+				KeyFingerprint string `json:"keyFingerprint"`
+				Passphrase     string `json:"passphrase"`
 			}{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-1")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.5"), Type: 0},
@@ -57,10 +57,10 @@ func TestSourceItemsDecryptsFieldsAndFiltersByHost(t *testing.T) {
 			ID:   "2",
 			Name: enc(t, sess, "no-host-item"),
 			SshKey: &struct {
-				PrivateKey     string `json:"PrivateKey"`
-				PublicKey      string `json:"PublicKey"`
-				KeyFingerprint string `json:"KeyFingerprint"`
-				Passphrase     string `json:"Passphrase"`
+				PrivateKey     string `json:"privateKey"`
+				PublicKey      string `json:"publicKey"`
+				KeyFingerprint string `json:"keyFingerprint"`
+				Passphrase     string `json:"passphrase"`
 			}{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-2")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: "", Type: 0}, // empty host -> excluded
@@ -102,10 +102,10 @@ func TestSourceDecryptPrivateKey(t *testing.T) {
 			ID:   "1",
 			Name: enc(t, sess, "test-host"),
 			SshKey: &struct {
-				PrivateKey     string `json:"PrivateKey"`
-				PublicKey      string `json:"PublicKey"`
-				KeyFingerprint string `json:"KeyFingerprint"`
-				Passphrase     string `json:"Passphrase"`
+				PrivateKey     string `json:"privateKey"`
+				PublicKey      string `json:"publicKey"`
+				KeyFingerprint string `json:"keyFingerprint"`
+				Passphrase     string `json:"passphrase"`
 			}{PrivateKey: encPriv},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "1.2.3.4"), Type: 0},
