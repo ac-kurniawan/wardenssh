@@ -75,7 +75,7 @@ func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List
 
 func (m *SetupModal) buildForm() {
 	m.form = tview.NewForm()
-	m.form.SetBorder(true).SetTitle(" Vault Unlock ").SetTitleAlign(tview.AlignCenter)
+	m.updateTitle()
 	m.form.AddPasswordField("Password:", "", 40, '*', func(text string) {
 		m.password = text
 	})
@@ -88,6 +88,19 @@ func (m *SetupModal) buildForm() {
 	m.form.SetCancelFunc(func() {
 		m.SkipCurrent()
 	})
+}
+
+func (m *SetupModal) updateTitle() {
+	prompt := m.CurrentPrompt()
+	if prompt == "" {
+		m.form.SetTitle(" Vault Unlock ")
+		return
+	}
+	if m.errMsg != "" {
+		m.form.SetTitle(fmt.Sprintf(" Unlock Vault: %s [red](%s)[-] ", prompt, m.errMsg))
+	} else {
+		m.form.SetTitle(fmt.Sprintf(" Unlock Vault: %s ", prompt))
+	}
 }
 
 // Primitive returns the tview primitive for layout embedding.
@@ -151,6 +164,7 @@ func (m *SetupModal) Submit() {
 			m.loggingIn = false
 			m.errMsg = fmt.Sprintf("login %q: %v", v.Name, err)
 			m.password = ""
+			m.updateTitle()
 			m.mu.Unlock()
 			return
 		}
@@ -160,6 +174,7 @@ func (m *SetupModal) Submit() {
 			m.loggingIn = false
 			m.errMsg = fmt.Sprintf("sync %q: %v", v.Name, err)
 			m.password = ""
+			m.updateTitle()
 			m.mu.Unlock()
 			return
 		}
@@ -169,6 +184,7 @@ func (m *SetupModal) Submit() {
 		m.sources = append(m.sources, src)
 		m.idx++
 		m.password = ""
+		m.updateTitle()
 		m.mu.Unlock()
 		m.checkDone()
 	}()
@@ -180,6 +196,7 @@ func (m *SetupModal) SkipCurrent() {
 	m.idx++
 	m.password = ""
 	m.errMsg = ""
+	m.updateTitle()
 	m.mu.Unlock()
 	m.checkDone()
 }
