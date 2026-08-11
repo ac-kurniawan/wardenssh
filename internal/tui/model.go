@@ -66,10 +66,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // green dots) is a future commit; this minimal view is enough to wire the
 // program and assert state in tests.
 func (m Model) View() string {
-	if m.st == stateQuitModal {
-		return "Quit? [k]ill all / [d]etach / [c]ancel"
-	}
-	return "host list"
+	return renderView(m)
 }
 
 // --- accessors used by tests / the future renderer ---
@@ -95,6 +92,18 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.requestQuit()
 	case msg.Type == tea.KeyTab:
 		m.hostList.Tab()
+		m.cursor = 0
+		return m, nil
+	case msg.Type == tea.KeyUp:
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return m, nil
+	case msg.Type == tea.KeyDown:
+		vis := m.hostList.Visible()
+		if m.cursor < len(vis)-1 {
+			m.cursor++
+		}
 		return m, nil
 	case msg.Type == tea.KeyEnter:
 		vis := m.hostList.Visible()
@@ -110,6 +119,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.filter) > 0 {
 			m.filter = m.filter[:len(m.filter)-1]
 			m.hostList.SetFilter(m.filter)
+			m.cursor = 0
 		}
 		return m, nil
 	case msg.Type == tea.KeyRunes:
@@ -119,6 +129,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.filter += s
 		m.hostList.SetFilter(m.filter)
+		m.cursor = 0
 		return m, nil
 	}
 	return m, nil
