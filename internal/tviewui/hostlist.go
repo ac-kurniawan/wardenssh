@@ -14,13 +14,15 @@ import (
 // It wraps the existing hosts.List (pure logic) and renders entries with source
 // badges and live green dots.
 type HostListPane struct {
-	hostList  *hosts.List
-	filter    *tview.InputField
-	list      *tview.List
-	flex      *tview.Flex
-	onConnect func(hosts.Entry)
-	onScope   func()
-	entries   []hosts.Entry // cached visible entries (for SelectedEntry)
+	hostList   *hosts.List
+	filter     *tview.InputField
+	list       *tview.List
+	flex       *tview.Flex
+	onConnect  func(hosts.Entry)
+	onScope    func()
+	onRefresh  func()
+	syncStatus string
+	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
 }
 
 // NewHostListPane builds the left pane from a hosts.List.
@@ -54,12 +56,19 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 				p.onScope()
 			}
 			return nil
+		case tcell.KeyCtrlR:
+			p.TriggerRefresh()
+			return nil
 		case tcell.KeyEnter:
 			if p.onConnect != nil {
 				if e, ok := p.SelectedEntry(); ok {
 					p.onConnect(e)
 				}
 			}
+			return nil
+		}
+		if event.Rune() == 'r' {
+			p.TriggerRefresh()
 			return nil
 		}
 		return event
@@ -79,6 +88,28 @@ func (p *HostListPane) SetOnConnect(fn func(hosts.Entry)) { p.onConnect = fn }
 
 // SetOnScopeChange installs the callback fired when Tab cycles scope.
 func (p *HostListPane) SetOnScopeChange(fn func()) { p.onScope = fn }
+
+// SetSyncStatus updates the sync status string shown in the title.
+func (p *HostListPane) SetSyncStatus(status string) {
+	p.syncStatus = status
+}
+
+// SetOnRefresh sets the callback for manual refresh (Ctrl+R / r key).
+func (p *HostListPane) SetOnRefresh(fn func()) {
+	p.onRefresh = fn
+}
+
+// TriggerRefresh fires the refresh callback (used in tests and shortcuts).
+func (p *HostListPane) TriggerRefresh() {
+	if p.onRefresh != nil {
+		p.onRefresh()
+	}
+}
+
+// Title returns the current list title (used in tests).
+func (p *HostListPane) Title() string {
+	return p.list.GetTitle()
+}
 
 // SetFilter sets the filter text programmatically (used in tests).
 func (p *HostListPane) SetFilter(text string) {
@@ -137,7 +168,11 @@ func (p *HostListPane) Refresh() {
 	if scope == "" {
 		scope = "all"
 	}
-	p.list.SetTitle(fmt.Sprintf(" Hosts (scope: %s) ", scope))
+	title := fmt.Sprintf(" Hosts (scope: %s) ", scope)
+	if p.syncStatus != "" {
+		title = fmt.Sprintf(" Hosts (scope: %s) • %s ", scope, p.syncStatus)
+	}
+	p.list.SetTitle(title)
 
 	for _, e := range p.entries {
 		p.list.AddItem(formatHostLine(e), "", 0, nil)

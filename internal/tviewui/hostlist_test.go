@@ -74,3 +74,26 @@ func TestHostListPaneLiveDot(t *testing.T) {
 		t.Errorf("expected green dot in rendered text, got: %s", text)
 	}
 }
+
+func TestHostListPaneSetSyncStatus(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.SetSyncStatus("Synced 20:54")
+	pane.Refresh()
+	title := pane.Title()
+	if !strings.Contains(title, "Synced 20:54") {
+		t.Errorf("title should contain sync status, got: %s", title)
+	}
+}
+
+func TestHostListPaneRefreshCallbackTriggered(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	refreshed := false
+	pane.SetOnRefresh(func() {
+		refreshed = true
+	})
+	pane.TriggerRefresh()
+	if !refreshed {
+		t.Fatal("expected OnRefresh callback after TriggerRefresh")
+	}
+}
+
