@@ -66,6 +66,20 @@ Spike #2 tests are gated behind `WARDENSSH_VAULTSPIKE=1` + `WARDENSSH_VW_EMAIL`
 The `bw` CLI (`npm install -g @bitwarden/cli`) is the byte-identical decrypt
 reference for the gold-standard SSH-Key item check.
 
+## VaultWarden API Quirks (discovered during gold-standard test)
+
+1. **JSON keys are camelCase**, NOT PascalCase. VaultWarden returns `"id"`,
+   `"name"`, `"sshKey"`, `"privateKey"`, `"fields"`, etc. Not `"Id"`,
+   `"Name"`, `"SshKey"`. All struct json tags must use camelCase.
+2. **`/api/sync` may return empty ciphers** even when items exist. The
+   `/api/ciphers` endpoint (returns `{"data":[...]}`) is the reliable source
+   — it's what `bw list items` uses. `Sync()` falls back to `/api/ciphers`
+   when sync yields no ciphers.
+3. **SSH-Key cipher Type is `5`** on VaultWarden (not 4 or 1000).
+4. **bw CLI JSON output escapes newlines** in private key strings (`\n`).
+   When comparing WardenSSH's raw decrypted bytes against bw output, unescape
+   JSON string escapes first (`\n` → 0x0a, etc.).
+
 ## Development — Workflow (ENFORCED)
 
 - **TDD is mandatory.** Red-Green-Refactor for every change. Write a failing
