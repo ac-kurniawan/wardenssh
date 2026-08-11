@@ -224,7 +224,8 @@ func runBWSession(t *testing.T, sess string, args ...string) string {
 
 // extractJSONField pulls a string field value out of a flat-ish JSON blob
 // without a full JSON dep. Good enough for bw's item JSON where the field
-// appears once as "privateKey":"<value>".
+// appears once as "privateKey":"<value>". Unescapes JSON string escapes
+// (\n, \", \\, etc.) so the result matches the raw decrypted bytes.
 func extractJSONField(json, field string) string {
 	needle := `"` + field + `":"`
 	i := strings.Index(json, needle)
@@ -239,10 +240,46 @@ func extractJSONField(json, field string) string {
 			continue
 		}
 		if json[j] == '"' {
-			return json[start:j]
+			return unescapeJSONString(json[start:j])
 		}
 	}
 	return ""
+}
+
+// unescapeJSONString reverses the minimal set of JSON string escapes that
+// appear in bw's decrypted output: \n \r \t \" \\ \/ \b \f.
+func unescapeJSONString(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case '"':
+			b.WriteByte('"')
+		case '\\':
+			b.WriteByte('\\')
+		case '/':
+			b.WriteByte('/')
+		case 'b':
+			b.WriteByte('\b')
+		case 'f':
+			b.WriteByte('\f')
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 func head(b []byte, n int) []byte {
