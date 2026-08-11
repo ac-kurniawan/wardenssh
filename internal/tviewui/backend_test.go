@@ -16,7 +16,7 @@ func TestPtyBackendReadsOutput(t *testing.T) {
 	marker := "WARDENSSH-BACKEND-TEST"
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", "echo "+marker)
+		cmd = exec.Command("powershell", "-Command", "Write-Output "+marker)
 	} else {
 		cmd = exec.Command("echo", marker)
 	}
@@ -102,3 +102,6 @@ func TestPtyBackendCloseTerminates(t *testing.T) {
 	}
 	_ = os.Stderr
 }
+
+
+

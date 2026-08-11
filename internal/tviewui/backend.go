@@ -39,7 +39,18 @@ func NewPtyBackend(cmd *exec.Cmd, cols, rows int) (*PtyBackend, error) {
 		// Resize failure is non-fatal — the terminal will resize on first Draw.
 		_ = os.Stderr
 	}
-	return &PtyBackend{pty: p, cmd: c}, nil
+
+	b := &PtyBackend{pty: p, cmd: c}
+
+	// ConPTY on Windows (and some unix PTYs) leaves the PTY master open after
+	// process exit. Waiting for the process in a background goroutine and closing
+	// the PTY ensures Read() receives EOF/error when the process exits.
+	go func() {
+		_ = c.Wait()
+		_ = b.Close()
+	}()
+
+	return b, nil
 }
 
 // Read reads output from the PTY master (the child's stdout/stderr).
