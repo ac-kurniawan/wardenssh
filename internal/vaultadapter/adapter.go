@@ -82,10 +82,19 @@ func (s *Source) DecryptPrivateKey(item vault.Item, passphrase string) ([]byte, 
 	return decrypted, nil
 }
 
-// Sync satisfies vault.Source: re-fetches ciphers via the session API.
-func (s *Source) Sync() error {
-	// Re-fetching ciphers would be performed against vaultclient.Client.
-	// For vaultadapter.Source, we return nil if no client pointer is held.
+// Sync re-fetches ciphers via the session API using the provided vaultclient.Client.
+func (s *Source) Sync(c *vaultclient.Client) error {
+	if s.session == nil {
+		return fmt.Errorf("vaultadapter: nil session for source %s", s.name)
+	}
+	if c == nil {
+		return fmt.Errorf("vaultadapter: nil client for source %s", s.name)
+	}
+	sr, err := c.Sync(s.session)
+	if err != nil {
+		return fmt.Errorf("vaultadapter: sync %s: %w", s.name, err)
+	}
+	s.ciphers = sr.Ciphers
 	return nil
 }
 
@@ -141,16 +150,23 @@ func NewClient(sources ...*Source) *Client {
 // Sources satisfies vault.Client.
 func (c *Client) Sources() []vault.Source { return c.sources }
 
-// Sync satisfies vault.Client: re-syncs all underlying sources.
+// Sync satisfies vault.Client: re-syncs all underlying sources without a client (no-op).
 func (c *Client) Sync() error {
-	for _, s := range c.sources {
-		if err := s.Sync(); err != nil {
-			return err
+	return nil
+}
+
+// SyncAll re-syncs all underlying sources using the provided vaultclient.Client.
+func (c *Client) SyncAll(vc *vaultclient.Client) error {
+	for _, src := range c.sources {
+		if s, ok := src.(*Source); ok {
+			if err := s.Sync(vc); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// Compile-time check: Source satisfies vault.Source.
+// Compile-time check: Source satisfies vault.Source and Client satisfies vault.Client.
 var _ vault.Source = (*Source)(nil)
 var _ vault.Client = (*Client)(nil)

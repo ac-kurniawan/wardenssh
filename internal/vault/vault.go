@@ -38,8 +38,6 @@ type Source interface {
 	// raw private key bytes (PEM/OpenSSH) for loading into the agent. This is
 	// called at connect time, not at list-build time.
 	DecryptPrivateKey(item Item, passphrase string) ([]byte, error)
-	// Sync re-fetches and re-decrypts vault item metadata.
-	Sync() error
 }
 
 // Client is the multi-vault aggregate (Q16/B).
