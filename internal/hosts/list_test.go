@@ -1,0 +1,169 @@
+package hosts_test
+
+import (
+	"testing"
+
+	"github.com/ac-kurniawan/wardenssh/internal/hosts"
+)
+
+// sampleEntries returns a mixed-source set used across assertions:
+//   file:       prod-db-01, web-02
+//   vw:personal: gitlab-runner, ci-box
+//   vw:work:     bastion-prod
+func sampleEntries() []hosts.Entry {
+	return []hosts.Entry{
+		{Alias: "prod-db-01", HostName: "10.0.0.5", Source: "file"},
+		{Alias: "web-02", HostName: "web-02.internal", Source: "file"},
+		{Alias: "gitlab-runner", HostName: "10.1.0.9", Source: "vw:personal"},
+		{Alias: "ci-box", HostName: "10.1.0.10", Source: "vw:personal"},
+		{Alias: "bastion-prod", HostName: "b.internal", Source: "vw:work"},
+	}
+}
+
+// TestScopesBuiltFromSources: NewList derives an ordered scope cycle
+// ["", "vw:personal", "vw:work", "file"] from the entries (all first, then
+// vaults in stable order, then file) — matching Q29/B's
+// all -> per-vault -> file-only -> all cycle.
+func TestScopesBuiltFromSources(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	want := []string{"", "vw:personal", "vw:work", "file"}
+	if got := l.Scopes(); !eqStr(got, want) {
+		t.Errorf("Scopes = %v, want %v", got, want)
+	}
+}
+
+// TestVisibleAllScope: scope "" (all) returns every entry.
+func TestVisibleAllScope(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	if got := len(l.Visible()); got != 5 {
+		t.Errorf("all scope: got %d, want 5", got)
+	}
+}
+
+// TestVisiblePerVaultScope: scope "vw:personal" returns only that vault's entries.
+func TestVisiblePerVaultScope(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	l.SetScope("vw:personal")
+	if got := l.Visible(); len(got) != 2 {
+		t.Errorf("vw:personal: got %d entries, want 2", len(got))
+	} else if got[0].Source != "vw:personal" {
+		t.Errorf("vw:personal first entry source = %q", got[0].Source)
+	}
+}
+
+// TestVisibleFileScope: scope "file" returns only file-sourced entries.
+func TestVisibleFileScope(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	l.SetScope("file")
+	if got := l.Visible(); len(got) != 2 {
+		t.Errorf("file: got %d entries, want 2", len(got))
+	}
+}
+
+// TestTabCyclesScopesInOrder: Tab advances through scopes in documented order
+// and wraps back to "" (all) after "file".
+func TestTabCyclesScopesInOrder(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	want := []string{"", "vw:personal", "vw:work", "file", ""}
+	for _, w := range want {
+		if got := l.Scope(); got != w {
+			t.Errorf("Scope() = %q, want %q", got, w)
+		}
+		l.Tab()
+	}
+}
+
+// TestFuzzyFilterSubsequence: a filter matches characters as an in-order
+// subsequence (fzf-style) of the alias, case-insensitive.
+func TestFuzzyFilterSubsequence(t *testing.T) {
+	cases := map[string]int{
+		"":     5, // empty filter shows all in scope
+		"pdb":  1, // prod-db-01 (p,d,b subsequence); bastion-prod lacks 'b' after 'd'
+		"prod": 2, // prod-db-01 AND bastion-prod (both contain p,r,o,d in order)
+		"web":  1, // web-02
+		"CI":   1, // ci-box (case-insensitive)
+		"zzz":  0, // no match
+	}
+	for filter, want := range cases {
+		l := hosts.NewList(sampleEntries())
+		l.SetFilter(filter)
+		if got := len(l.Visible()); got != want {
+			t.Errorf("filter %q: got %d, want %d", filter, got, want)
+		}
+	}
+}
+
+// TestFilterComposesWithScope: filter applies within the current scope, not
+// across all sources.
+func TestFilterComposesWithScope(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	l.SetScope("vw:personal") // gitlab-runner, ci-box
+	l.SetFilter("ci")         // ci-box
+	if got := l.Visible(); len(got) != 1 || got[0].Alias != "ci-box" {
+		t.Errorf("scope+filter: got %+v, want [ci-box]", got)
+	}
+}
+
+// TestLiveMarking: MarkLive/MarkDead toggles the green-dot Live flag, and the
+// flag survives filtering (Q18/iii live-session indicator).
+func TestLiveMarking(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	l.MarkLive("prod-db-01", "file")
+	l.MarkLive("ci-box", "vw:personal")
+	vis := l.Visible()
+	live := liveAliases(vis)
+	if !contains(live, "prod-db-01") || !contains(live, "ci-box") {
+		t.Errorf("live set = %v, want both prod-db-01 and ci-box", live)
+	}
+	l.MarkDead("prod-db-01", "file")
+	vis = l.Visible()
+	if contains(liveAliases(vis), "prod-db-01") {
+		t.Errorf("prod-db-01 still live after MarkDead: %v", liveAliases(vis))
+	}
+	if !contains(liveAliases(vis), "ci-box") {
+		t.Errorf("ci-box lost live flag after unrelated MarkDead: %v", liveAliases(vis))
+	}
+}
+
+// TestSetScopeUnknownIsNoop: an unknown scope falls back to "all" safely.
+func TestSetScopeUnknownIsNoop(t *testing.T) {
+	l := hosts.NewList(sampleEntries())
+	l.SetScope("vw:nonexistent")
+	if got := len(l.Visible()); got != 5 {
+		t.Errorf("unknown scope: got %d, want all 5", got)
+	}
+	if l.Scope() != "" {
+		t.Errorf("unknown scope should fall back to all (\"\"); got %q", l.Scope())
+	}
+}
+
+func eqStr(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func liveAliases(es []hosts.Entry) []string {
+	var out []string
+	for _, e := range es {
+		if e.Live {
+			out = append(out, e.Alias)
+		}
+	}
+	return out
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
