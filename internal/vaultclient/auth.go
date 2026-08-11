@@ -31,10 +31,11 @@ type TokenResponse struct {
 // Session is an authenticated vault session: the access token + the decrypted
 // user symmetric key (used to decrypt vault items) + the RSA private key.
 type Session struct {
-	AccessToken string
-	SymEnc      []byte // 32 bytes — AES key for vault items
-	SymMac      []byte // 32 bytes — HMAC key for vault items
-	PrivateKey  string // encrypted RSA private key (decrypted lazily by callers via vaultcrypto.DecryptPrivateKey)
+	AccessToken  string
+	RefreshToken string
+	SymEnc       []byte // 32 bytes — AES key for vault items
+	SymMac       []byte // 32 bytes — HMAC key for vault items
+	PrivateKey   string // encrypted RSA private key (decrypted lazily by callers via vaultcrypto.DecryptPrivateKey)
 }
 
 // Login authenticates with email + master password using the PBKDF2 KDF path.
@@ -104,10 +105,11 @@ func (c *Client) Login(email, masterPassword string) (*Session, error) {
 	}
 
 	return &Session{
-		AccessToken: tr.AccessToken,
-		SymEnc:      symKey[:32],
-		SymMac:      symKey[32:],
-		PrivateKey:  tr.PrivateKey,
+		AccessToken:  tr.AccessToken,
+		RefreshToken: tr.RefreshToken,
+		SymEnc:       symKey[:32],
+		SymMac:       symKey[32:],
+		PrivateKey:   tr.PrivateKey,
 	}, nil
 }
 
@@ -174,15 +176,16 @@ func (c *Client) LoginWith2FA(email, masterPassword, twoFactorCode string, provi
 	}
 
 	return &Session{
-		AccessToken: tr.AccessToken,
-		SymEnc:      symKey[:32],
-		SymMac:      symKey[32:],
-		PrivateKey:  tr.PrivateKey,
+		AccessToken:  tr.AccessToken,
+		RefreshToken: tr.RefreshToken,
+		SymEnc:       symKey[:32],
+		SymMac:       symKey[32:],
+		PrivateKey:   tr.PrivateKey,
 	}, nil
 }
 
-// RefreshLogin authenticates using a refresh token obtained from a previous Login.
-func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
+// RefreshToken exchanges a refresh token for a new session token pair.
+func (c *Client) RefreshToken(refreshToken string) (*Session, error) {
 	devID := make([]byte, 16)
 	_, _ = rand.Read(devID)
 	form := url.Values{
@@ -194,7 +197,10 @@ func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
 		"deviceIdentifier":  {hex.EncodeToString(devID)},
 		"deviceName":        {"wardenssh"},
 	}
-	req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/identity/connect/token", bytes.NewBufferString(form.Encode()))
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/identity/connect/token", bytes.NewBufferString(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("refresh token: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -203,27 +209,29 @@ func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("refresh login: status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("refresh token: status %d: %s", resp.StatusCode, string(raw))
 	}
 
 	var tr TokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return nil, fmt.Errorf("refresh login: decode token: %w", err)
+		return nil, fmt.Errorf("refresh token: decode token: %w", err)
 	}
 
-	// Decrypt the Protected Symmetric Key if returned in refresh
-	if len(tr.Key) > 0 {
-		// Note: Refresh responses might require stored keys or full login if key is empty.
-		// For BitWarden API, if Key is provided in refresh token response:
-		if tr.Key[0] == '0' {
-			return nil, fmt.Errorf("refresh login: legacy key format not supported on refresh")
-		}
+	refTok := tr.RefreshToken
+	if refTok == "" {
+		refTok = refreshToken
 	}
 
 	return &Session{
-		AccessToken: tr.AccessToken,
-		PrivateKey:  tr.PrivateKey,
+		AccessToken:  tr.AccessToken,
+		RefreshToken: refTok,
+		PrivateKey:   tr.PrivateKey,
 	}, nil
+}
+
+// RefreshLogin authenticates using a refresh token obtained from a previous Login.
+func (c *Client) RefreshLogin(email, refreshToken string) (*Session, error) {
+	return c.RefreshToken(refreshToken)
 }
 
 // SyncResponse is the subset of /api/sync's JSON we consume. The full sync

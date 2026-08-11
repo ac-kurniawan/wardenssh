@@ -1,13 +1,18 @@
 package tviewui_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
 )
 
 func sampleVaults() []config.Vault {
@@ -91,6 +96,72 @@ func TestSetupModalBackspaceDeletesLastChar(t *testing.T) {
 	m.Backspace()
 	if got := m.Password(); got != "h" {
 		t.Errorf("password after backspace = %q, want h", got)
+	}
+}
+
+func TestSetupModalSavesRefreshTokenToKeyringOnLogin(t *testing.T) {
+	var savedVaultName, savedRefreshToken string
+	tviewui.SetKeyringSetRefreshTokenForTest(func(vName, token string) error {
+		savedVaultName = vName
+		savedRefreshToken = token
+		return nil
+	})
+	defer tviewui.ResetKeyringSetRefreshTokenForTest()
+
+	ak, err := vaultclient.DeriveAccountKeys("user@example.com", "pass", 1000)
+	if err != nil {
+		t.Fatalf("DeriveAccountKeys: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/accounts/prelogin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"kdf":0,"kdfIterations":1000}`))
+	})
+	mux.HandleFunc("/identity/connect/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]string{
+			"access_token":  "mock-at",
+			"refresh_token": "mock-rt-456",
+			"Key":           ak.ProtectedKey,
+		}
+		json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	hl := hosts.NewList(nil)
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl)
+
+	doneCh := make(chan struct{})
+	m.SetOnComplete(func(vc vault.Client) {
+		close(doneCh)
+	})
+
+	m.TypeRune('p')
+	m.TypeRune('a')
+	m.TypeRune('s')
+	m.TypeRune('s')
+	m.Submit()
+
+	select {
+	case <-doneCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("setup did not complete in time, last err: %s", m.Error())
+	}
+
+	if savedVaultName != "myvault" {
+		t.Errorf("savedVaultName = %q, want myvault", savedVaultName)
+	}
+	if savedRefreshToken != "mock-rt-456" {
+		t.Errorf("savedRefreshToken = %q, want mock-rt-456", savedRefreshToken)
 	}
 }
 

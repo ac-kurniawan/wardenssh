@@ -9,6 +9,7 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/app"
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
+	"github.com/ac-kurniawan/wardenssh/internal/keyring"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
@@ -16,10 +17,11 @@ import (
 
 // Indirection points for testability.
 var (
-	vaultclientNew        = vaultclient.New
-	vaultadapterNewClient = vaultadapter.NewClient
-	vaultadapterNewSource = vaultadapter.NewSource
-	appVaultEntries       = app.VaultEntries
+	vaultclientNew         = vaultclient.New
+	vaultadapterNewClient  = vaultadapter.NewClient
+	vaultadapterNewSource  = vaultadapter.NewSource
+	appVaultEntries        = app.VaultEntries
+	keyringSetRefreshToken = keyring.SetRefreshToken
 )
 
 // SetAppVaultEntriesForTest overrides the vault-entries extractor (tests only).
@@ -30,6 +32,16 @@ func SetAppVaultEntriesForTest(f func(vault.Client) ([]hosts.Entry, error)) {
 // ResetAppVaultEntriesForTest restores the real vault-entries extractor.
 func ResetAppVaultEntriesForTest() {
 	appVaultEntries = app.VaultEntries
+}
+
+// SetKeyringSetRefreshTokenForTest overrides keyring.SetRefreshToken (tests only).
+func SetKeyringSetRefreshTokenForTest(f func(string, string) error) {
+	keyringSetRefreshToken = f
+}
+
+// ResetKeyringSetRefreshTokenForTest restores the real keyring.SetRefreshToken.
+func ResetKeyringSetRefreshTokenForTest() {
+	keyringSetRefreshToken = keyring.SetRefreshToken
 }
 
 // SetupModal is the vault unlock modal. It prompts for the master password
@@ -167,6 +179,9 @@ func (m *SetupModal) Submit() {
 			m.updateTitle()
 			m.mu.Unlock()
 			return
+		}
+		if sess.RefreshToken != "" {
+			_ = keyringSetRefreshToken(v.Name, sess.RefreshToken)
 		}
 		sr, err := c.Sync(sess)
 		if err != nil {
