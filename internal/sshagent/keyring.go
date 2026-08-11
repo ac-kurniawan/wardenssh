@@ -13,6 +13,11 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+// errDisabled is returned for all protocol-driven key management operations
+// (Add/Remove/RemoveAll/Lock/Unlock). Keys enter and leave the keyring only
+// via Load/ReleaseSession (vault lazy-decrypt + session ref-counting).
+var errDisabled = errors.New("sshagent: protocol key management disabled; keys are loaded from the vault")
+
 // Keyring holds loaded private keys in RAM and serves the agent protocol.
 // It wraps golang.org/x/crypto/ssh/agent's in-memory keyring for the actual
 // protocol operations (List/Sign/Signers) and adds per-session reference
@@ -104,3 +109,27 @@ func (k *Keyring) List() ([]*agent.Key, error) {
 func (k *Keyring) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	return k.inner.Sign(key, data)
 }
+
+// Signers returns the loaded keys as ssh.Signers (agent protocol).
+func (k *Keyring) Signers() ([]ssh.Signer, error) {
+	return k.inner.Signers()
+}
+
+// Add refuses keys arriving via the agent wire protocol. WardenSSH loads
+// keys only from the vault via Load (lazy-decrypt); a stray `ssh-add` must
+// not inject keys into the in-process agent.
+func (k *Keyring) Add(_ agent.AddedKey) error { return errDisabled }
+
+// Remove refuses protocol-driven key removal. Keys leave the keyring only
+// when their last holding session disconnects (ReleaseSession).
+func (k *Keyring) Remove(_ ssh.PublicKey) error { return errDisabled }
+
+// RemoveAll refuses protocol-driven removal of all keys.
+func (k *Keyring) RemoveAll() error { return errDisabled }
+
+// Lock is disabled in v0 (the session-only passphrase cache lives in the
+// TUI process, not the agent keyring; see .local/spec.md Q22/C).
+func (k *Keyring) Lock(_ []byte) error { return errDisabled }
+
+// Unlock is the counterpart to Lock; disabled in v0.
+func (k *Keyring) Unlock(_ []byte) error { return errDisabled }
