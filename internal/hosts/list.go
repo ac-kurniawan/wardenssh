@@ -99,6 +99,15 @@ func (l *List) All() []Entry {
 	return out
 }
 
+// Merge appends new entries (typically from a vault source that became
+// available after setup) and recomputes the scope cycle. Existing live
+// flags are preserved. The current filter is lazy — Visible() will pick
+// up the new entries automatically on the next render.
+func (l *List) Merge(newEntries []Entry) {
+	l.entries = append(l.entries, newEntries...)
+	l.scopes = l.deriveScopes()
+}
+
 // MarkLive flags the entry (matched by alias + source) as having an open
 // session (green dot). No-op if not found.
 func (l *List) MarkLive(alias, source string) {

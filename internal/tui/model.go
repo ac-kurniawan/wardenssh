@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ac-kurniawan/wardenssh/internal/app"
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/connect"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
@@ -28,10 +29,21 @@ import (
 // Indirection points for testability (tests can override these to inject
 // mock vault clients without touching real network endpoints).
 var (
-	vaultclientNew     = vaultclient.New
+	vaultclientNew        = vaultclient.New
 	vaultadapterNewClient = vaultadapter.NewClient
 	vaultadapterNewSource = vaultadapter.NewSource
+	appVaultEntries       = app.VaultEntries
 )
+
+// SetAppVaultEntriesForTest overrides the vault-entries extractor (tests only).
+func SetAppVaultEntriesForTest(f func(vault.Client) ([]hosts.Entry, error)) {
+	appVaultEntries = f
+}
+
+// ResetAppVaultEntriesForTest restores the real vault-entries extractor.
+func ResetAppVaultEntriesForTest() {
+	appVaultEntries = app.VaultEntries
+}
 
 // ConnectMsg is emitted by Enter on a selected entry, carrying the entry the
 // session manager should open.
@@ -316,6 +328,13 @@ func (m Model) handleVaultReady(msg VaultReadyMsg) (tea.Model, tea.Cmd) {
 func (m Model) transitionToList() (tea.Model, tea.Cmd) {
 	if len(m.setupSources) > 0 {
 		m.vaultCli = vaultadapterNewClient(m.setupSources...)
+		// Merge vault hosts into the existing host list.
+		if m.hostList != nil && m.vaultCli != nil {
+			entries, err := appVaultEntries(m.vaultCli)
+			if err == nil {
+				m.hostList.Merge(entries)
+			}
+		}
 	}
 	m.st = stateList
 	m.setupInput.Blur()

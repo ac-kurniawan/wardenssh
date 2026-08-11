@@ -63,3 +63,26 @@ func BuildHostList(sshConfig io.Reader, vc vault.Client) (*hosts.List, error) {
 
 	return hosts.NewList(entries), nil
 }
+
+// VaultEntries extracts host entries from a vault client's sources. Used by
+// the TUI to merge vault hosts into the existing list after setup completes.
+func VaultEntries(vc vault.Client) ([]hosts.Entry, error) {
+	var entries []hosts.Entry
+	for _, src := range vc.Sources() {
+		items, err := src.Items()
+		if err != nil {
+			return nil, err
+		}
+		for _, it := range items {
+			entries = append(entries, hosts.Entry{
+				Alias:     it.Name,
+				HostName:  it.HostName,
+				User:      it.User,
+				Port:      it.Port,
+				ProxyJump: it.ProxyJump,
+				Source:    src.Name(),
+			})
+		}
+	}
+	return entries, nil
+}

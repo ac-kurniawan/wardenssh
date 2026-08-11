@@ -9,6 +9,7 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tui"
+	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 )
 
@@ -365,6 +366,42 @@ func TestSetupModalVaultReadyTransitionsToList(t *testing.T) {
 	}
 	if mModel.VaultClient() == nil {
 		t.Fatal("expected non-nil vault client after successful login")
+	}
+}
+
+// TestSetupModalVaultReadyMergesHostsIntoList: after VaultReadyMsg, the vault
+// source's hosts must appear in the host list (not just file-source hosts).
+func TestSetupModalVaultReadyMergesHostsIntoList(t *testing.T) {
+	// Override appVaultEntries to return a fake vault host (simulates a
+	// successful decrypt of vault items).
+	tui.SetAppVaultEntriesForTest(func(_ vault.Client) ([]hosts.Entry, error) {
+		return []hosts.Entry{{Alias: "vault-host", Source: "vw:vw"}}, nil
+	})
+	defer tui.ResetAppVaultEntriesForTest()
+
+	// Start with file-only hosts.
+	h := hosts.NewList([]hosts.Entry{
+		{Alias: "file-host", Source: "file"},
+	})
+	m := tui.NewWithSetup(h, tui.Deps{}, sampleVaults())
+
+	// Send VaultReadyMsg — the model should merge vault entries.
+	mm, _ := m.Update(tui.VaultReadyMsg{Source: &vaultadapter.Source{}})
+	mModel := mm.(tui.Model)
+
+	// The host list should now have both file-host and vault-host.
+	all := mModel.List().All()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries (file+vault), got %d: %+v", len(all), all)
+	}
+	found := false
+	for _, e := range all {
+		if e.Alias == "vault-host" && e.Source == "vw:vw" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("vault-host not found in merged list")
 	}
 }
 

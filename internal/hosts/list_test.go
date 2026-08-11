@@ -167,3 +167,70 @@ func contains(s []string, v string) bool {
 	}
 	return false
 }
+
+// TestMergeAppendsVaultEntriesAndRecomputesScopes: after Merge, new entries
+// appear in All() and the scope cycle includes the new vault source.
+func TestMergeAppendsVaultEntriesAndRecomputesScopes(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "prod-db-01", Source: "file"},
+	})
+
+	// Before merge: only file scope.
+	scopes := l.Scopes()
+	if !contains(scopes, "file") || contains(scopes, "vw:personal") {
+		t.Fatalf("pre-merge scopes = %v", scopes)
+	}
+
+	// Merge vault entries.
+	l.Merge([]hosts.Entry{
+		{Alias: "gitlab", Source: "vw:personal"},
+		{Alias: "ci-box", Source: "vw:personal"},
+	})
+
+	// After merge: vault entries present + scope includes vw:personal.
+	all := l.All()
+	if len(all) != 3 {
+		t.Fatalf("expected 3 entries after merge, got %d", len(all))
+	}
+	scopes = l.Scopes()
+	if !contains(scopes, "vw:personal") {
+		t.Errorf("post-merge scopes missing vw:personal: %v", scopes)
+	}
+}
+
+// TestMergePreservesLiveFlags: live sessions on existing entries survive merge.
+func TestMergePreservesLiveFlags(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "prod-db-01", Source: "file"},
+	})
+	l.MarkLive("prod-db-01", "file")
+
+	l.Merge([]hosts.Entry{{Alias: "vault-host", Source: "vw:personal"}})
+
+	for _, e := range l.All() {
+		if e.Alias == "prod-db-01" && e.Source == "file" && !e.Live {
+			t.Error("live flag lost on prod-db-01 after merge")
+		}
+	}
+}
+
+// TestMergeResetsFilter: merge re-applies the current filter to include new entries.
+func TestMergeResetsFilter(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "prod-db-01", Source: "file"},
+	})
+	l.SetFilter("git")
+
+	// Before merge: filter matches nothing.
+	if vis := l.Visible(); len(vis) != 0 {
+		t.Fatalf("pre-merge visible = %d, want 0", len(vis))
+	}
+
+	l.Merge([]hosts.Entry{{Alias: "gitlab", Source: "vw:personal"}})
+
+	// After merge: filter matches the new vault entry.
+	vis := l.Visible()
+	if len(vis) != 1 || vis[0].Alias != "gitlab" {
+		t.Errorf("post-merge visible = %v, want [gitlab]", vis)
+	}
+}
