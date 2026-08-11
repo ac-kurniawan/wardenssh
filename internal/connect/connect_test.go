@@ -20,13 +20,13 @@ func TestSSHArgv(t *testing.T) {
 		expected []string
 	}{
 		{
-			name: "Basic host only",
+			name: "Basic host only — defaults to root",
 			entry: hosts.Entry{
 				Alias:    "myhost",
 				HostName: "1.2.3.4",
 				Source:   "file",
 			},
-			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "1.2.3.4"},
+			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "root@1.2.3.4"},
 		},
 		{
 			name: "Host with user and port",
@@ -40,14 +40,14 @@ func TestSSHArgv(t *testing.T) {
 			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-p", "2222", "ubuntu@1.2.3.4"},
 		},
 		{
-			name: "Host with proxyjump",
+			name: "Host with proxyjump — defaults to root",
 			entry: hosts.Entry{
 				Alias:     "myhost",
 				HostName:  "1.2.3.4",
 				ProxyJump: "jumpbox",
 				Source:    "vw:personal",
 			},
-			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-J", "jumpbox", "1.2.3.4"},
+			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-J", "jumpbox", "root@1.2.3.4"},
 		},
 	}
 

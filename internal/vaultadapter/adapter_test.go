@@ -2,6 +2,8 @@ package vaultadapter_test
 
 import (
 	"crypto/rand"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
@@ -136,5 +138,113 @@ func TestClientMultiSource(t *testing.T) {
 	}
 	if c.Sources()[0].Name() != "vw:personal" || c.Sources()[1].Name() != "vw:work" {
 		t.Errorf("source names = %q/%q", c.Sources()[0].Name(), c.Sources()[1].Name())
+	}
+}
+
+// TestSourceSyncUpdatesCiphers: Sync re-fetches ciphers from vaultclient.Client
+// and updates the source's cached ciphers so Items() reflects server state.
+func TestSourceSyncUpdatesCiphers(t *testing.T) {
+	sess := fakeSession(t)
+	sess.AccessToken = "test-token"
+	cf := config.Default().CustomFields
+
+	ciphers1 := []vaultclient.Cipher{
+		{
+			ID:   "1",
+			Name: enc(t, sess, "host-1"),
+			SshKey: &struct {
+				PrivateKey     string `json:"privateKey"`
+				PublicKey      string `json:"publicKey"`
+				KeyFingerprint string `json:"keyFingerprint"`
+				Passphrase     string `json:"passphrase"`
+			}{PrivateKey: enc(t, sess, "KEY-1")},
+			Fields: []vaultclient.CustomField{
+				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.1"), Type: 0},
+			},
+		},
+	}
+	src := vaultadapter.NewSource("vw:personal", sess, ciphers1, cf)
+
+	itemsBefore, _ := src.Items()
+	if len(itemsBefore) != 1 {
+		t.Fatalf("before sync: got %d items, want 1", len(itemsBefore))
+	}
+
+	ciphersJSON := `{"data":[
+		{
+			"id": "1",
+			"name": "` + enc(t, sess, "host-1") + `",
+			"type": 5,
+			"sshKey": {"privateKey": "` + enc(t, sess, "KEY-1") + `"},
+			"fields": [{"name": "` + enc(t, sess, "host") + `", "value": "` + enc(t, sess, "10.0.0.1") + `", "type": 0}]
+		},
+		{
+			"id": "2",
+			"name": "` + enc(t, sess, "host-2") + `",
+			"type": 5,
+			"sshKey": {"privateKey": "` + enc(t, sess, "KEY-2") + `"},
+			"fields": [{"name": "` + enc(t, sess, "host") + `", "value": "` + enc(t, sess, "10.0.0.2") + `", "type": 0}]
+		}
+	]}`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(ciphersJSON))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	vc := vaultclient.New(srv.URL)
+	if err := src.Sync(vc); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	itemsAfter, err := src.Items()
+	if err != nil {
+		t.Fatalf("Items after sync: %v", err)
+	}
+	if len(itemsAfter) != 2 {
+		t.Fatalf("after sync: got %d items, want 2", len(itemsAfter))
+	}
+}
+
+// TestClientSyncAllUpdatesSources: SyncAll syncs all underlying sources.
+func TestClientSyncAllUpdatesSources(t *testing.T) {
+	sess := fakeSession(t)
+	sess.AccessToken = "test-token"
+	cf := config.Default().CustomFields
+
+	src1 := vaultadapter.NewSource("vw:personal", sess, nil, cf)
+	src2 := vaultadapter.NewSource("vw:work", sess, nil, cf)
+	client := vaultadapter.NewClient(src1, src2)
+
+	ciphersJSON := `{"data":[
+		{
+			"id": "10",
+			"name": "` + enc(t, sess, "host-10") + `",
+			"type": 5,
+			"sshKey": {"privateKey": "` + enc(t, sess, "KEY-10") + `"},
+			"fields": [{"name": "` + enc(t, sess, "host") + `", "value": "` + enc(t, sess, "10.0.0.10") + `", "type": 0}]
+		}
+	]}`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(ciphersJSON))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	vc := vaultclient.New(srv.URL)
+	if err := client.SyncAll(vc); err != nil {
+		t.Fatalf("SyncAll failed: %v", err)
+	}
+
+	items1, _ := src1.Items()
+	items2, _ := src2.Items()
+	if len(items1) != 1 || len(items2) != 1 {
+		t.Fatalf("expected 1 item per source after SyncAll, got %d and %d", len(items1), len(items2))
 	}
 }

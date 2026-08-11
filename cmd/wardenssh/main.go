@@ -3,8 +3,8 @@
 //   - build the merged host list from ~/.ssh/config (file source) and the
 //     vault client (real vault auth via TUI setup modal, or FakeClient when
 //     no vaults are configured)
-//   - start the in-process ssh-agent on a platform pipe and run the Bubble
-//     Tea launcher
+//   - start the in-process ssh-agent on a platform pipe and run the tview/tvxterm
+//     launcher
 package main
 
 import (
@@ -14,14 +14,12 @@ import (
 	"os"
 	"path/filepath"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/ac-kurniawan/wardenssh/internal/app"
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/connect"
 	"github.com/ac-kurniawan/wardenssh/internal/session"
 	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
-	"github.com/ac-kurniawan/wardenssh/internal/tui"
+	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 )
 
@@ -62,7 +60,7 @@ func run() error {
 	// 2. Initialize session manager.
 	mgr := session.NewManager()
 
-	deps := tui.Deps{
+	deps := tviewui.Deps{
 		Agent:        kr,
 		Mgr:          mgr,
 		AgentPipe:    pipePath,
@@ -70,24 +68,19 @@ func run() error {
 	}
 
 	// 3. Build the initial host list (file-source only; vault hosts are
-	//    merged in after the setup modal completes via VaultReadyMsg).
+	//    merged in after the setup modal completes).
 	hostList, err := app.BuildHostList(sshConfigReader, nil)
 	if err != nil {
 		return fmt.Errorf("build host list: %w", err)
 	}
 
-	// 4. Launch the TUI. If vaults are configured, start in setup mode
-	//    (master password prompt). Otherwise, use FakeClient (file-only).
-	var model tea.Model
-	if len(cfg.Vaults) > 0 {
-		model = tui.NewWithSetup(hostList, deps, cfg.Vaults)
-	} else {
+	if len(cfg.Vaults) == 0 {
 		deps.VaultCli = vault.NewFakeClient()
-		model = tui.NewWithDeps(hostList, deps)
 	}
 
-	p := tea.NewProgram(model, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	// 4. Launch the TUI.
+	uiApp := tviewui.New(hostList, deps, cfg.Vaults)
+	if err := uiApp.Run(); err != nil {
 		return fmt.Errorf("run tui: %w", err)
 	}
 

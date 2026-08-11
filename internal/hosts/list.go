@@ -108,6 +108,36 @@ func (l *List) Merge(newEntries []Entry) {
 	l.scopes = l.deriveScopes()
 }
 
+// ReplaceVaultEntries replaces all entries belonging to the given source
+// with newEntries, preserving existing Live session flags for matching aliases.
+func (l *List) ReplaceVaultEntries(source string, newEntries []Entry) {
+	live := make(map[string]bool)
+	for _, e := range l.entries {
+		if e.Source == source && e.Live {
+			live[e.Alias] = true
+		}
+	}
+
+	var updated []Entry
+	for _, e := range l.entries {
+		if e.Source != source {
+			updated = append(updated, e)
+		}
+	}
+
+	for _, ne := range newEntries {
+		if live[ne.Alias] {
+			ne.Live = true
+		}
+		updated = append(updated, ne)
+	}
+
+	l.entries = updated
+	l.scopes = l.deriveScopes()
+	l.SetScope(l.Scope())
+}
+
+
 // MarkLive flags the entry (matched by alias + source) as having an open
 // session (green dot). No-op if not found.
 func (l *List) MarkLive(alias, source string) {

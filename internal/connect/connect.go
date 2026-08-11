@@ -6,6 +6,7 @@ package connect
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -47,6 +48,8 @@ func Connect(entry hosts.Entry, sessionID string, vc vault.Client, c *Connector)
 		return Result{Err: fmt.Errorf("connect: connector not initialized")}
 	}
 
+	fmt.Fprintf(os.Stderr, "wardenssh: connecting to %q (source=%s)\n", entry.Alias, entry.Source)
+
 	// 1. For file-sourced entries, ssh reads the key from disk directly
 	//    (Q6/A read-only ~/.ssh). No agent involvement needed for file keys —
 	//    ssh.exe reads IdentityFile from ~/.ssh/config. For vault-sourced
@@ -58,32 +61,69 @@ func Connect(entry hosts.Entry, sessionID string, vc vault.Client, c *Connector)
 		// Find the source + item matching this entry.
 		item, src, err := findVaultItem(vc, entry)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: find vault item: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: find vault item: %w", err)}
 		}
 
 		// Lazy-decrypt the private key (Q8/C).
 		decrypted, err := src.DecryptPrivateKey(item, "")
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: decrypt private key: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: decrypt private key: %w", err)}
 		}
+		fmt.Fprintf(os.Stderr, "wardenssh: decrypted key (%d bytes)\n", len(decrypted))
 
 		// Parse + load into the agent.
 		priv, err := ssh.ParseRawPrivateKey(decrypted)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: parse private key: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: parse private key: %w", err)}
 		}
 		if _, err := c.Agent.Load(priv, entry.Alias, sessionID); err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: agent load: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: agent load: %w", err)}
 		}
+		fmt.Fprintf(os.Stderr, "wardenssh: key loaded into agent\n")
 	}
 
 	// 3. Build ssh argv.
 	argv := SSHArgv(entry, AgentPipePath())
+	fmt.Fprintf(os.Stderr, "wardenssh: spawning ssh: %v\n", argv)
 
 	// 4. Spawn ssh via the session manager with SSH_AUTH_SOCK.
 	env := EnvForAgent(AgentPipePath())
 	sess, err := c.Mgr.SpawnWithEnv(entry.Alias, entry.Source, argv, env)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wardenssh: spawn: %v\n", err)
+	}
 	return Result{Session: sess, Err: err}
+}
+
+// PrepareAgentKey decrypts the private key for a vault-sourced entry and loads it
+// into the agent keyring for sessionID. No-op for file-sourced entries.
+func PrepareAgentKey(entry hosts.Entry, sessionID string, vc vault.Client, agent *sshagent.Keyring) error {
+	if entry.Source == "file" {
+		return nil
+	}
+	if vc == nil || agent == nil {
+		return fmt.Errorf("prepare key: vault client or agent keyring is nil")
+	}
+	item, src, err := findVaultItem(vc, entry)
+	if err != nil {
+		return fmt.Errorf("find vault item: %w", err)
+	}
+	decrypted, err := src.DecryptPrivateKey(item, "")
+	if err != nil {
+		return fmt.Errorf("decrypt private key: %w", err)
+	}
+	priv, err := ssh.ParseRawPrivateKey(decrypted)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+	if _, err := agent.Load(priv, entry.Alias, sessionID); err != nil {
+		return fmt.Errorf("agent load: %w", err)
+	}
+	return nil
 }
 
 // SSHArgv builds the ssh command-line arguments for a host entry. The agent
@@ -110,11 +150,12 @@ func SSHArgv(entry hosts.Entry, agentPipe string) []string {
 		args = append(args, "-J", entry.ProxyJump)
 	}
 
-	// Target: user@host or just host.
-	target := entry.HostName
-	if entry.User != "" {
-		target = entry.User + "@" + entry.HostName
+	// Target: user@host. Default user is "root" when not specified.
+	user := entry.User
+	if user == "" {
+		user = "root"
 	}
+	target := user + "@" + entry.HostName
 	args = append(args, target)
 
 	return args

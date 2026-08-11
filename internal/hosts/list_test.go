@@ -234,3 +234,44 @@ func TestMergeResetsFilter(t *testing.T) {
 		t.Errorf("post-merge visible = %v, want [gitlab]", vis)
 	}
 }
+
+// TestListReplaceVaultEntriesPreservesLiveState: ReplaceVaultEntries replaces
+// all entries for the specified vault source with newEntries, preserving
+// existing Live session flags for matching aliases.
+func TestListReplaceVaultEntriesPreservesLiveState(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "prod-db-01", HostName: "10.0.0.5", Source: "vw:personal"},
+		{Alias: "web-02", HostName: "web-02.internal", Source: "vw:personal"},
+		{Alias: "bastion-prod", HostName: "b.internal", Source: "vw:work"},
+	})
+
+	l.MarkLive("prod-db-01", "vw:personal")
+
+	newEntries := []hosts.Entry{
+		{Alias: "prod-db-01", HostName: "10.0.0.5", Source: "vw:personal"},
+		{Alias: "api-gw", HostName: "10.0.0.99", Source: "vw:personal"},
+	}
+
+	l.ReplaceVaultEntries("vw:personal", newEntries)
+
+	all := l.All()
+	if len(all) != 3 {
+		t.Fatalf("got %d entries after replace, want 3", len(all))
+	}
+
+	foundProdDB := false
+	for _, e := range all {
+		if e.Alias == "prod-db-01" && e.Source == "vw:personal" {
+			foundProdDB = true
+			if !e.Live {
+				t.Errorf("prod-db-01 lost Live flag after ReplaceVaultEntries")
+			}
+		}
+		if e.Alias == "web-02" {
+			t.Errorf("web-02 should have been removed by ReplaceVaultEntries")
+		}
+	}
+	if !foundProdDB {
+		t.Errorf("prod-db-01 missing from All()")
+	}
+}
