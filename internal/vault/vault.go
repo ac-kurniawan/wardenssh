@@ -38,11 +38,14 @@ type Source interface {
 	// raw private key bytes (PEM/OpenSSH) for loading into the agent. This is
 	// called at connect time, not at list-build time.
 	DecryptPrivateKey(item Item, passphrase string) ([]byte, error)
+	// Sync re-fetches and re-decrypts vault item metadata.
+	Sync() error
 }
 
 // Client is the multi-vault aggregate (Q16/B).
 type Client interface {
 	Sources() []Source
+	Sync() error
 }
 
 // --- in-memory fake for tests / dev ---
@@ -81,6 +84,9 @@ func (s *FakeSource) DecryptPrivateKey(item Item, passphrase string) ([]byte, er
 	return []byte(item.EncPrivateKey), nil
 }
 
+// Sync satisfies Source for the fake (no-op).
+func (s *FakeSource) Sync() error { return nil }
+
 // FakeClient is a Client backed by a fixed list of Sources.
 type FakeClient struct{ sources []Source }
 
@@ -89,3 +95,6 @@ func NewFakeClient(sources ...Source) *FakeClient { return &FakeClient{sources: 
 
 // Sources satisfies Client.
 func (c *FakeClient) Sources() []Source { return c.sources }
+
+// Sync satisfies Client for the fake (no-op).
+func (c *FakeClient) Sync() error { return nil }

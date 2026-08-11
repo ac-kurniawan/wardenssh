@@ -9,6 +9,7 @@ package tui
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -85,8 +86,28 @@ func NewWithDeps(h *hosts.List, deps Deps) Model {
 	}
 }
 
+// SyncTickMsg triggers a background vault sync check.
+type SyncTickMsg struct{}
+
+// SyncResultMsg carries the outcome of a background vault sync attempt.
+type SyncResultMsg struct {
+	VaultName string
+	Err       error
+}
+
+func syncTickCmd() tea.Cmd {
+	return tea.Tick(5*time.Minute, func(time.Time) tea.Msg {
+		return SyncTickMsg{}
+	})
+}
+
 // Init satisfies tea.Model.
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if m.vaultCli != nil {
+		return syncTickCmd()
+	}
+	return nil
+}
 
 // Update satisfies tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -120,6 +141,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agent.ReleaseSession(msg.SessionID)
 		}
 		m.hostList.MarkDead(msg.Alias, msg.Source)
+		return m, nil
+	case SyncTickMsg:
+		if m.vaultCli == nil {
+			return m, nil
+		}
+		cli := m.vaultCli
+		return m, tea.Batch(
+			func() tea.Msg {
+				err := cli.Sync()
+				return SyncResultMsg{VaultName: "all", Err: err}
+			},
+			syncTickCmd(),
+		)
+	case SyncResultMsg:
+		if msg.Err != nil {
+			m.errStatus = "sync fail: " + msg.Err.Error()
+		}
 		return m, nil
 	case tea.KeyMsg:
 		switch m.st {

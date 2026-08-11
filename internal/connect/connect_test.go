@@ -80,12 +80,14 @@ func (f *fakeSource) DecryptPrivateKey(it vault.Item, pass string) ([]byte, erro
 	}
 	return []byte(it.EncPrivateKey), nil
 }
+func (f *fakeSource) Sync() error { return nil }
 
 type fakeClient struct {
 	sources []vault.Source
 }
 
 func (f *fakeClient) Sources() []vault.Source { return f.sources }
+func (f *fakeClient) Sync() error             { return nil }
 
 func TestFindVaultItem(t *testing.T) {
 	fc := &fakeClient{

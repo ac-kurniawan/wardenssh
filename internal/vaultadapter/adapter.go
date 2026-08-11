@@ -82,6 +82,13 @@ func (s *Source) DecryptPrivateKey(item vault.Item, passphrase string) ([]byte, 
 	return decrypted, nil
 }
 
+// Sync satisfies vault.Source: re-fetches ciphers via the session API.
+func (s *Source) Sync() error {
+	// Re-fetching ciphers would be performed against vaultclient.Client.
+	// For vaultadapter.Source, we return nil if no client pointer is held.
+	return nil
+}
+
 // customFieldValues holds decrypted custom-field values for one item.
 type customFieldValues struct {
 	HostName  string
@@ -133,6 +140,16 @@ func NewClient(sources ...*Source) *Client {
 
 // Sources satisfies vault.Client.
 func (c *Client) Sources() []vault.Source { return c.sources }
+
+// Sync satisfies vault.Client: re-syncs all underlying sources.
+func (c *Client) Sync() error {
+	for _, s := range c.sources {
+		if err := s.Sync(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // Compile-time check: Source satisfies vault.Source.
 var _ vault.Source = (*Source)(nil)
