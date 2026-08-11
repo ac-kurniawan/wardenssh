@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/kevinburke/ssh_config v1.6.0
+	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.54.0
 )
 
@@ -31,7 +32,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	github.com/zalando/go-keyring v0.2.8 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )
