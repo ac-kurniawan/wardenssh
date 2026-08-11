@@ -4,3 +4,6 @@
 
 # opencode runtime (plugins/skills cache, not project config)
 .agent/
+
+# cross-compile build artifacts
+wardenssh-*
