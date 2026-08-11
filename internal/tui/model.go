@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -222,18 +223,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		if res.Err != nil {
 			m.errStatus = res.Err.Error()
+			fmt.Fprintf(os.Stderr, "wardenssh: connect error: %v\n", res.Err)
 			return m, nil
 		}
 		m.hostList.MarkLive(msg.Entry.Alias, msg.Entry.Source)
+		m.activeSession = res.Session
+		m.st = stateSession
+		m.errStatus = ""
 		sess := res.Session
-		return m, func() tea.Msg {
-			<-sess.Done()
-			return SessionExitedMsg{
-				Alias:     msg.Entry.Alias,
-				Source:    msg.Entry.Source,
-				SessionID: sessID,
-			}
-		}
+		return m, tea.Batch(
+			sessionPollCmd(),
+			func() tea.Msg {
+				<-sess.Done()
+				return SessionExitedMsg{
+					Alias:     msg.Entry.Alias,
+					Source:    msg.Entry.Source,
+					SessionID: sessID,
+				}
+			},
+		)
 	case SyncTickMsg:
 		if m.vaultCli == nil {
 			return m, nil

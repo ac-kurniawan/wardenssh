@@ -6,6 +6,7 @@ package connect
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -47,6 +48,8 @@ func Connect(entry hosts.Entry, sessionID string, vc vault.Client, c *Connector)
 		return Result{Err: fmt.Errorf("connect: connector not initialized")}
 	}
 
+	fmt.Fprintf(os.Stderr, "wardenssh: connecting to %q (source=%s)\n", entry.Alias, entry.Source)
+
 	// 1. For file-sourced entries, ssh reads the key from disk directly
 	//    (Q6/A read-only ~/.ssh). No agent involvement needed for file keys —
 	//    ssh.exe reads IdentityFile from ~/.ssh/config. For vault-sourced
@@ -58,31 +61,41 @@ func Connect(entry hosts.Entry, sessionID string, vc vault.Client, c *Connector)
 		// Find the source + item matching this entry.
 		item, src, err := findVaultItem(vc, entry)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: find vault item: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: find vault item: %w", err)}
 		}
 
 		// Lazy-decrypt the private key (Q8/C).
 		decrypted, err := src.DecryptPrivateKey(item, "")
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: decrypt private key: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: decrypt private key: %w", err)}
 		}
+		fmt.Fprintf(os.Stderr, "wardenssh: decrypted key (%d bytes)\n", len(decrypted))
 
 		// Parse + load into the agent.
 		priv, err := ssh.ParseRawPrivateKey(decrypted)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: parse private key: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: parse private key: %w", err)}
 		}
 		if _, err := c.Agent.Load(priv, entry.Alias, sessionID); err != nil {
+			fmt.Fprintf(os.Stderr, "wardenssh: agent load: %v\n", err)
 			return Result{Err: fmt.Errorf("connect: agent load: %w", err)}
 		}
+		fmt.Fprintf(os.Stderr, "wardenssh: key loaded into agent\n")
 	}
 
 	// 3. Build ssh argv.
 	argv := SSHArgv(entry, AgentPipePath())
+	fmt.Fprintf(os.Stderr, "wardenssh: spawning ssh: %v\n", argv)
 
 	// 4. Spawn ssh via the session manager with SSH_AUTH_SOCK.
 	env := EnvForAgent(AgentPipePath())
 	sess, err := c.Mgr.SpawnWithEnv(entry.Alias, entry.Source, argv, env)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wardenssh: spawn: %v\n", err)
+	}
 	return Result{Session: sess, Err: err}
 }
 
