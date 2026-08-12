@@ -20,12 +20,10 @@ sleep 4
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Host list visible" || true
 
-# Test fuzzy search — press / to enter search mode
+# Test fuzzy search — type filter directly (Filter field is focused)
 echo "[2/8] Testing fuzzy search..."
-tmux_type "/"
-sleep 0.3
 tmux_type "test"
-sleep 0.5
+sleep 1
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Search shows test-host" || true
 
