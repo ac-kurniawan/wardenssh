@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package sshauthsock is Spike #1 (see .local/plan.md): prove Windows
 // OpenSSH 9.5p2 honors SSH_AUTH_SOCK pointing at a Go-served named pipe.
 // This is the project-killing risk for Windows support.

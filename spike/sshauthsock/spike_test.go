@@ -1,3 +1,5 @@
+//go:build windows
+
 package sshauthsock_test
 
 import (
