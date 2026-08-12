@@ -80,7 +80,7 @@ fi
 # Test connecting to test-host (navigate down) and then Esc to return
 echo "[7/8] Testing connect then Esc..."
 tmux_keys Down  # Move to test-host
-sleep 0.3
+sleep 0.5
 tmux_enter  # Connect
 sleep 3
 tmux_escape  # Return to host list
