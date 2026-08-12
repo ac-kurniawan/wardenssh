@@ -10,10 +10,13 @@ echo "=== Phase 4: TUI Interaction E2E ==="
 echo "[1/8] Starting and logging in..."
 tmux_start /tmp/wardenssh
 sleep 2
-tmux_type "$VW_PASS"
-sleep 0.5
-tmux_enter
-sleep 5
+SCREEN=$(tmux_capture)
+if echo "$SCREEN" | grep -q "Password"; then
+    tmux_type "$VW_PASS"
+    sleep 0.5
+    tmux_enter
+    sleep 5
+fi
 
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Host list visible" || true
@@ -44,8 +47,19 @@ SCREEN=$(tmux_capture)
 echo "  After second Tab:"
 echo "$SCREEN" | head -3 | sed 's/^/    /'
 
-# Test quit modal with q
-echo "[5/8] Testing quit modal (q)..."
+# Connect to test-host (navigate down) to start a live session
+echo "[5/8] Testing connect then Esc..."
+tmux_keys Down  # Move to test-host
+sleep 0.5
+tmux_enter  # Connect
+sleep 3
+tmux_escape  # Return to host list
+sleep 1
+SCREEN=$(tmux_capture)
+assert_contains "$SCREEN" "test-host" "Esc returns to host list from session" || true
+
+# Test quit modal with q (live session exists, so quit modal appears)
+echo "[6/8] Testing quit modal (q)..."
 tmux_keys q
 sleep 0.5
 SCREEN=$(tmux_capture)
@@ -62,7 +76,7 @@ if ! echo "$SCREEN" | grep -q "WARDENSSH_EXITED"; then
 fi
 
 # Test Ctrl+Q
-echo "[6/8] Testing Ctrl+Q..."
+echo "[7/8] Testing Ctrl+Q..."
 tmux_ctrl_q
 sleep 0.5
 SCREEN=$(tmux_capture)
@@ -74,17 +88,6 @@ if ! echo "$SCREEN" | grep -q "WARDENSSH_EXITED"; then
     tmux_escape
     sleep 0.5
 fi
-
-# Test connecting to test-host (navigate down) and then Esc to return
-echo "[7/8] Testing connect then Esc..."
-tmux_keys Down  # Move to test-host
-sleep 0.5
-tmux_enter  # Connect
-sleep 3
-tmux_escape  # Return to host list
-sleep 1
-SCREEN=$(tmux_capture)
-assert_contains "$SCREEN" "test-host" "Esc returns to host list from session" || true
 
 # Final cleanup
 echo "[8/8] Cleaning up..."

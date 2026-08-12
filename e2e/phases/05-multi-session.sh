@@ -10,10 +10,13 @@ echo "=== Phase 5: Multi-Session E2E ==="
 echo "[1/8] Starting and logging in..."
 tmux_start /tmp/wardenssh
 sleep 2
-tmux_type "$VW_PASS"
-sleep 0.5
-tmux_enter
-sleep 5
+SCREEN=$(tmux_capture)
+if echo "$SCREEN" | grep -q "Password"; then
+    tmux_type "$VW_PASS"
+    sleep 0.5
+    tmux_enter
+    sleep 5
+fi
 
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Host list shows test-host" || true
