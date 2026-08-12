@@ -1,7 +1,10 @@
 package tviewui_test
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -113,6 +116,45 @@ func TestAppTriggerSyncOfflineStatusOnSyncError(t *testing.T) {
 
 var _ = config.CustomFields{}
 var _ = vaultadapter.Client{}
+
+func TestAppSetupOnCompleteFromGoroutine(t *testing.T) {
+	tviewui.SetKeyringGetRefreshTokenForTest(func(vName string) (string, error) {
+		if vName == "myvault" {
+			return "valid-ref-token", nil
+		}
+		return "", fmt.Errorf("no token")
+	})
+	defer tviewui.ResetKeyringGetRefreshTokenForTest()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/connect/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]string{
+			"access_token":  "mock-at",
+			"refresh_token": "valid-ref-token",
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, vaults)
+
+	time.Sleep(200 * time.Millisecond)
+
+	if app == nil {
+		t.Fatal("expected non-nil app")
+	}
+}
+
 
 
 
