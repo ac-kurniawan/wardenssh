@@ -15,10 +15,8 @@ sleep 2
 echo "[2/6] Logging into vault..."
 tmux_type "$VW_PASS"
 sleep 0.5
-tmux_tab
-sleep 0.3
 tmux_enter
-sleep 4
+sleep 5
 
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Host list shows test-host" || true

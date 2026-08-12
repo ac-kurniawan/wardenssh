@@ -12,10 +12,8 @@ tmux_start /tmp/wardenssh
 sleep 2
 tmux_type "$VW_PASS"
 sleep 0.5
-tmux_tab
-sleep 0.3
 tmux_enter
-sleep 4
+sleep 5
 
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Host list shows test-host" || true

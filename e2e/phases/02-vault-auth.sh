@@ -21,11 +21,8 @@ assert_contains "$SCREEN" "Unlock" "Setup modal shows Unlock button" || true
 echo "[3/4] Entering master password..."
 tmux_type "$VW_PASS"
 sleep 0.5
-# Tab to the Unlock button and press Enter
-tmux_tab
-sleep 0.3
 tmux_enter
-sleep 4  # Wait for vault sync
+sleep 5  # Wait for vault sync
 
 SCREEN=$(tmux_capture)
 echo "  Screen after login:"

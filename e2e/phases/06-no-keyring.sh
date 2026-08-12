@@ -25,10 +25,8 @@ assert_contains "$SCREEN" "Unlock" "Unlock button visible" || true
 echo "[3/4] Entering master password manually..."
 tmux_type "$VW_PASS"
 sleep 0.5
-tmux_tab
-sleep 0.3
 tmux_enter
-sleep 4
+sleep 5
 
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Host list appears after manual login" || true
