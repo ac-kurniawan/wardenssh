@@ -81,10 +81,17 @@ func TestSessionCapturesChildOutput(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("session did not exit within 5s")
 	}
-	<-s.Done()
-	if !strings.Contains(string(s.Buffer()), marker) {
-		t.Errorf("buffer = %q, want it to contain %q", s.Buffer(), marker)
+
+	// Poll for the marker with a timeout instead of a single read.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(string(s.Buffer()), marker) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+
+	t.Fatalf("buffer = %q, want it to contain %q", string(s.Buffer()), marker)
 }
 
 // TestSessionKillTerminates: a long-running session is terminated by Kill and
