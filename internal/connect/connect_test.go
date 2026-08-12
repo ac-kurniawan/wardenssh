@@ -66,6 +66,46 @@ func TestSSHArgv(t *testing.T) {
 	}
 }
 
+func TestSSHArgvPassesIdentityFileForFileSource(t *testing.T) {
+	entry := hosts.Entry{
+		Alias:        "myhost",
+		HostName:     "10.0.0.1",
+		User:         "admin",
+		Port:         "2222",
+		Source:       "file",
+		IdentityFile: "/home/user/.ssh/id_ed25519",
+	}
+	argv := SSHArgv(entry, "/tmp/agent-sock")
+
+	// Should contain -i /home/user/.ssh/id_ed25519
+	found := false
+	for i, arg := range argv {
+		if arg == "-i" && i+1 < len(argv) && argv[i+1] == "/home/user/.ssh/id_ed25519" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected -i /home/user/.ssh/id_ed25519 in argv, got %v", argv)
+	}
+}
+
+func TestSSHArgvOmitsIdentityFileForVaultSource(t *testing.T) {
+	entry := hosts.Entry{
+		Alias:    "vaulthost",
+		HostName: "10.0.0.2",
+		User:     "root",
+		Source:   "vw:personal",
+	}
+	argv := SSHArgv(entry, "/tmp/agent-sock")
+
+	for i, arg := range argv {
+		if arg == "-i" {
+			t.Errorf("vault-sourced entry should not have -i, got %v (at index %d)", argv, i)
+		}
+	}
+}
+
 type fakeSource struct {
 	name  string
 	items []vault.Item

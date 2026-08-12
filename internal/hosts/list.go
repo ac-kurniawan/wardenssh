@@ -13,13 +13,14 @@ import (
 
 // Entry is a single launchable host, regardless of source.
 type Entry struct {
-	Alias     string // display label (vault item name or ssh_config alias)
-	HostName  string
-	User      string
-	Port      string
-	ProxyJump string
-	Source    string // "file" or "vw:<vault-name>"
-	Live      bool   // green-dot: a session to this host is currently open
+	Alias        string // display label (vault item name or ssh_config alias)
+	HostName     string
+	User         string
+	Port         string
+	ProxyJump    string
+	Source       string // "file" or "vw:<vault-name>"
+	Live         bool   // green-dot: a session to this host is currently open
+	IdentityFile string // path to private key file (file-sourced entries only)
 }
 
 // List is the merged, filterable, scope-cyclable host list.

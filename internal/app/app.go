@@ -29,15 +29,13 @@ func BuildHostList(sshConfig io.Reader, vc vault.Client) (*hosts.List, error) {
 				continue // Host * carries defaults, not an endpoint
 			}
 			entries = append(entries, hosts.Entry{
-				Alias:      h.Alias,
-				HostName:   h.HostName,
-				User:       h.User,
-				Port:       h.Port,
-				ProxyJump:  h.ProxyJump,
-				Source:     "file",
-				// IdentityFile is not carried into the launcher list (vault keys
-				// arrive via the agent; file-source keys are read directly from
-				// disk by ssh.exe when the entry is selected).
+				Alias:        h.Alias,
+				HostName:     h.HostName,
+				User:         h.User,
+				Port:         h.Port,
+				ProxyJump:    h.ProxyJump,
+				Source:       "file",
+				IdentityFile: h.IdentityFile,
 			})
 		}
 	}

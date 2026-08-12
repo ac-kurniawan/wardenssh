@@ -140,6 +140,12 @@ func SSHArgv(entry hosts.Entry, agentPipe string) []string {
 	// Accept new host keys (per Q9/A vertical-slice pattern).
 	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
 
+	// For file-sourced entries, pass the IdentityFile directly.
+	// Vault-sourced entries use the in-process agent (no -i needed).
+	if entry.Source == "file" && entry.IdentityFile != "" {
+		args = append(args, "-i", entry.IdentityFile)
+	}
+
 	// Port (if specified).
 	if entry.Port != "" {
 		args = append(args, "-p", entry.Port)
