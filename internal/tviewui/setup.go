@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/app"
@@ -179,19 +178,9 @@ func (m *SetupModal) TryAutoLogin() {
 func (m *SetupModal) buildForm() {
 	m.form = tview.NewForm()
 	m.updateTitle()
-	passField := tview.NewInputField().
-		SetLabel("Password:").
-		SetFieldWidth(40).
-		SetMaskCharacter('*').
-		SetChangedFunc(func(text string) {
-			m.password = text
-		}).
-		SetDoneFunc(func(key tcell.Key) {
-			if key == tcell.KeyEnter {
-				m.Submit()
-			}
-		})
-	m.form.AddFormItem(passField)
+	m.form.AddPasswordField("Password:", "", 40, '*', func(text string) {
+		m.password = text
+	})
 	m.form.AddButton("Unlock", func() {
 		m.Submit()
 	})
