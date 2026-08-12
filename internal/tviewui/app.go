@@ -101,17 +101,21 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 		a.inSetup = true
 		a.setupModal = NewSetupModal(vaults, deps.CustomFields, hostList, deps.NoKeyring)
 		a.setupModal.SetOnComplete(func(vc vault.Client) {
-			a.inSetup = false
-			a.deps.VaultCli = vc
-			a.overlay.RemovePage("setup")
-			a.hostPane.Refresh()
-			a.app.SetFocus(a.hostPane.Primitive())
+			a.app.QueueUpdateDraw(func() {
+				a.inSetup = false
+				a.deps.VaultCli = vc
+				a.overlay.RemovePage("setup")
+				a.hostPane.Refresh()
+				a.app.SetFocus(a.hostPane.Primitive())
+			})
 			a.StartBackgroundSync(5 * time.Minute)
 		})
 		a.setupModal.SetOnSkip(func() {
-			a.inSetup = false
-			a.overlay.RemovePage("setup")
-			a.app.SetFocus(a.hostPane.Primitive())
+			a.app.QueueUpdateDraw(func() {
+				a.inSetup = false
+				a.overlay.RemovePage("setup")
+				a.app.SetFocus(a.hostPane.Primitive())
+			})
 		})
 		a.overlay.AddPage("setup", a.setupModal.Primitive(), true, true)
 		a.app.SetFocus(a.setupModal.Primitive())
