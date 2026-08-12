@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/app"
@@ -189,6 +190,16 @@ func (m *SetupModal) buildForm() {
 	})
 	m.form.SetCancelFunc(func() {
 		m.SkipCurrent()
+	})
+	// tview.Form's Focus handler intercepts KeyEnter to advance focus.
+	// SetInputCapture on the Form runs BEFORE the internal handler
+	// (see box.go WrapInputHandler), so we can intercept Enter here.
+	m.form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEnter && m.password != "" && !m.loggingIn {
+			m.Submit()
+			return nil
+		}
+		return event
 	})
 }
 

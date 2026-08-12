@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
@@ -280,4 +283,42 @@ func TestSetupModalNoKeyringSkipsAutoLogin(t *testing.T) {
 		t.Error("expected setup modal not to be done")
 	}
 }
+
+func TestSetupModalEnterKeySubmits(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/accounts/prelogin", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	hl := hosts.NewList(nil)
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl, true)
+	m.TypeRune('p')
+	m.TypeRune('a')
+	m.TypeRune('s')
+	m.TypeRune('s')
+
+	var focusFunc func(p tview.Primitive)
+	focusFunc = func(p tview.Primitive) {
+		if p != nil {
+			p.Focus(focusFunc)
+		}
+	}
+	m.Primitive().Focus(focusFunc)
+
+	handler := m.Primitive().InputHandler()
+	if handler != nil {
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), focusFunc)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if m.Error() == "" {
+		t.Error("expected Submit() to be called on Enter press, got empty error")
+	}
+}
+
 
