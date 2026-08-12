@@ -21,36 +21,36 @@ SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "test-host" "Host list shows test-host" || true
 assert_contains "$SCREEN" "file-host" "Host list shows file-host" || true
 
-# Connect to file-host (it's first in the list, already selected)
+# Connect to file-host (first in list, already selected)
 echo "[2/8] Connecting to file-host..."
-tmux_enter  # Connect to file-host (first in list)
+tmux_enter
 sleep 3
 SCREEN=$(tmux_capture)
-assert_match "$SCREEN" "wardenssh-test|\\$" "SSH session 1 active" || true
+assert_match "$SCREEN" "wardenssh-test|\\$" "SSH session 1 (file-host) active" || true
 
-# Esc back to host list (yield-and-switch)
+# Esc back to host list
 echo "[3/8] Returning to host list (yield)..."
 tmux_escape
 sleep 1
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "file-host" "Back to host list" || true
 
-# Connect to test-host (navigate down to it)
+# Connect to test-host (navigate down)
 echo "[4/8] Connecting to test-host..."
-tmux_keys Down  # Move to test-host
-sleep 0.3
-tmux_enter  # Connect
+tmux_keys Down
+sleep 0.5
+tmux_enter
 sleep 3
 SCREEN=$(tmux_capture)
-assert_match "$SCREEN" "wardenssh-test|\\$" "SSH session 2 active" || true
+assert_match "$SCREEN" "wardenssh-test|\\$" "SSH session 2 (test-host) active" || true
 
-# Esc back to host list — both should be live
+# Esc back to host list — both should be live (green dots)
 echo "[5/8] Returning to host list..."
 tmux_escape
 sleep 1
 SCREEN=$(tmux_capture)
 echo "  Host list with both live:"
-echo "$SCREEN" | head -10 | sed 's/^/    /'
+echo "$SCREEN" | head -6 | sed 's/^/    /'
 assert_contains "$SCREEN" "test-host" "test-host in list" || true
 assert_contains "$SCREEN" "file-host" "file-host in list" || true
 
@@ -61,11 +61,11 @@ sleep 0.5
 SCREEN=$(tmux_capture)
 echo "  Quit modal:"
 echo "$SCREEN" | head -10 | sed 's/^/    /'
-# Should NOT have exited immediately (live sessions exist)
 assert_not_contains "$SCREEN" "WARDENSSH_EXITED" "Quit modal appeared (not immediate exit)" || true
 
-# Kill all sessions — try Enter to confirm
+# Kill all — look for Kill All text and press Enter
 echo "[7/8] Killing all sessions..."
+# The quit modal has "Kill All" and "Detach" options. Try Enter to confirm.
 tmux_enter
 sleep 2
 SCREEN=$(tmux_capture)
