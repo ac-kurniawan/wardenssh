@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -23,6 +24,13 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 )
 
+func parseFlags() bool {
+	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	noKeyring := fs.Bool("no-keyring", false, "prompt for master password interactively; do not use OS keyring")
+	_ = fs.Parse(os.Args[1:])
+	return *noKeyring
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "wardenssh:", err)
@@ -31,6 +39,8 @@ func main() {
 }
 
 func run() error {
+	noKeyring := parseFlags()
+
 	cfgPath, err := config.DefaultPath()
 	if err != nil {
 		return fmt.Errorf("resolve config path: %w", err)
@@ -65,6 +75,7 @@ func run() error {
 		Mgr:          mgr,
 		AgentPipe:    pipePath,
 		CustomFields: cfg.CustomFields,
+		NoKeyring:    noKeyring,
 	}
 
 	// 3. Build the initial host list (file-source only; vault hosts are

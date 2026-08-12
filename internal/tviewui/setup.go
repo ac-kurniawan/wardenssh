@@ -78,22 +78,31 @@ type SetupModal struct {
 	onComplete func(vault.Client)
 	onSkip     func()
 
+	noKeyring bool
+
 	mu sync.Mutex
 }
 
 // NewSetupModal builds the vault unlock modal.
-func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List) *SetupModal {
+func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List, noKeyring ...bool) *SetupModal {
+	nk := false
+	if len(noKeyring) > 0 {
+		nk = noKeyring[0]
+	}
 	m := &SetupModal{
 		vaults:       vaults,
 		customFields: cf,
 		hostList:     hl,
+		noKeyring:    nk,
 	}
 	m.buildForm()
 	m.modal = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(nil, 0, 1, false).
 		AddItem(m.form, 9, 0, true).
 		AddItem(nil, 0, 1, false)
-	m.TryAutoLogin()
+	if !m.noKeyring {
+		m.TryAutoLogin()
+	}
 	return m
 }
 
@@ -102,7 +111,7 @@ func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List
 // If the token is missing, invalid, or refresh fails, it silently falls back to master password entry.
 func (m *SetupModal) TryAutoLogin() {
 	m.mu.Lock()
-	if m.loggingIn || m.idx >= len(m.vaults) {
+	if m.noKeyring || m.loggingIn || m.idx >= len(m.vaults) {
 		m.mu.Unlock()
 		return
 	}

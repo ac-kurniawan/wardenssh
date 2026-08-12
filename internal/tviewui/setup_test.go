@@ -260,3 +260,24 @@ func TestSetupModalAutoLoginFailureFallsBackToPasswordPrompt(t *testing.T) {
 	}
 }
 
+func TestSetupModalNoKeyringSkipsAutoLogin(t *testing.T) {
+	called := false
+	tviewui.SetKeyringGetRefreshTokenForTest(func(vName string) (string, error) {
+		called = true
+		return "valid-ref-token", nil
+	})
+	defer tviewui.ResetKeyringGetRefreshTokenForTest()
+
+	hl := hosts.NewList(nil)
+	m := tviewui.NewSetupModal(sampleVaults(), config.CustomFields{}, hl, true)
+
+	time.Sleep(50 * time.Millisecond)
+
+	if called {
+		t.Error("expected keyring get refresh token not to be called when noKeyring is true")
+	}
+	if m.IsDone() {
+		t.Error("expected setup modal not to be done")
+	}
+}
+

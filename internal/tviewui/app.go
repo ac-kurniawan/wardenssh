@@ -26,6 +26,7 @@ type Deps struct {
 	VaultCli     vault.Client
 	AgentPipe    string
 	CustomFields config.CustomFields
+	NoKeyring    bool // true = skip OS keyring, always prompt for master password
 }
 
 // App is the main WardenSSH launcher TUI application.
@@ -98,7 +99,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	// Setup mode?
 	if len(vaults) > 0 {
 		a.inSetup = true
-		a.setupModal = NewSetupModal(vaults, deps.CustomFields, hostList)
+		a.setupModal = NewSetupModal(vaults, deps.CustomFields, hostList, deps.NoKeyring)
 		a.setupModal.SetOnComplete(func(vc vault.Client) {
 			a.inSetup = false
 			a.deps.VaultCli = vc
