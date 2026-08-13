@@ -24,23 +24,42 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 )
 
-func parseFlags() bool {
-	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-	noKeyring := fs.Bool("no-keyring", false, "prompt for master password interactively; do not use OS keyring")
-	_ = fs.Parse(os.Args[1:])
-	return *noKeyring
-}
+// version is the release version, injected at build time by goreleaser via
+// -ldflags "-X main.version={{.Version}}". Defaults to "dev" for local builds.
+var version = "dev"
+
+// versionOutput is the io.Writer for the -version banner (overridable for
+// tests).
+var versionOutput io.Writer = os.Stdout
 
 func main() {
-	if err := run(); err != nil {
+	showVersion, noKeyring := parseFlags()
+	if showVersion {
+		printVersion()
+		return
+	}
+	if err := run(noKeyring); err != nil {
 		fmt.Fprintln(os.Stderr, "wardenssh:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	noKeyring := parseFlags()
+// printVersion writes the version banner to versionOutput.
+func printVersion() {
+	fmt.Fprintf(versionOutput, "wardenssh %s\n", version)
+}
 
+// parseFlags parses the command-line flags. Returns (showVersion, noKeyring).
+// It is a pure flag parser; it never prints or exits.
+func parseFlags() (showVersion, noKeyring bool) {
+	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	noKeyringFlag := fs.Bool("no-keyring", false, "prompt for master password interactively; do not use OS keyring")
+	showVersionFlag := fs.Bool("version", false, "print version and exit")
+	_ = fs.Parse(os.Args[1:])
+	return *showVersionFlag, *noKeyringFlag
+}
+
+func run(noKeyring bool) error {
 	cfgPath, err := config.DefaultPath()
 	if err != nil {
 		return fmt.Errorf("resolve config path: %w", err)
