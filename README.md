@@ -7,6 +7,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](#-cross-platform-support)
 [![Security](https://img.shields.io/badge/Security-Zero--Disk--Footprint-success)](#-security-model)
 [![Test](https://github.com/ac-kurniawan/wardenssh/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/ac-kurniawan/wardenssh/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/ac-kurniawan/wardenssh?logo=github)](https://github.com/ac-kurniawan/wardenssh/releases/latest)
 
 **WardenSSH** is a modern, cross-platform Terminal User Interface (TUI) application designed to manage SSH host connections and private keys seamlessly. Built using [tview](https://github.com/rivo/tview) + [tcell](https://github.com/gdamore/tcell) with an embedded terminal emulator ([tvxterm](https://github.com/blacknon/tvxterm)).
 
@@ -74,8 +75,16 @@ WardenSSH acts as the **TUI Host Launcher**, **Vault Client**, and **In-Process 
 
 ### Installing via `go install`
 
+The easiest way to install the latest release:
+
 ```bash
 go install github.com/ac-kurniawan/wardenssh@latest
+```
+
+Verify the installed version:
+
+```bash
+wardenssh -version
 ```
 
 Alternatively, clone the repository and build manually:
@@ -83,7 +92,7 @@ Alternatively, clone the repository and build manually:
 ```bash
 git clone https://github.com/ac-kurniawan/wardenssh.git
 cd wardenssh
-go build -o wardenssh ./cmd/wardenssh
+go build -o wardenssh .
 ```
 
 ---

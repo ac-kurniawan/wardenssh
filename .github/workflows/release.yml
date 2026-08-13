@@ -1,0 +1,41 @@
+name: Release
+
+# Builds and publishes binaries for every semver tag (vX.Y.Z).
+# A tag push IS the deployment: it makes `go install ...@latest` resolve the
+# new version AND publishes the GitHub Release with platform binaries.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    name: Release binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # goreleaser needs full history for changelog
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      # Never publish a red build: gate the release on the full test suite.
+      - name: Test
+        run: go test ./...
+
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
