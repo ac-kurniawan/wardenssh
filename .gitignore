@@ -6,4 +6,6 @@
 .agent/
 
 # cross-compile build artifacts
+wardenssh
+wardenssh.exe
 wardenssh-*
