@@ -3,6 +3,7 @@ package sshagent_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,6 +15,11 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 )
 
+// macOSSunPathLimit is the length of sun_path in sockaddr_un on darwin
+// (104 bytes on Linux it is 108; using the smaller macOS bound keeps the path
+// portable to both). Unix socket bind fails with EINVAL beyond this.
+const macOSSunPathLimit = 104
+
 // addrFor returns a unique agent address for the current platform:
 // Windows named pipe vs unix-domain socket.
 func addrFor(t *testing.T) string {
@@ -22,7 +28,36 @@ func addrFor(t *testing.T) string {
 		name := strings.ToLower(strings.ReplaceAll(t.Name(), "/", "-"))
 		return `\\.\pipe\wardenssh-` + name + "-" + randSuffix()
 	}
-	return filepath.Join(t.TempDir(), "agent.sock")
+	return filepath.Join(unixSocketDir(t), "agent.sock")
+}
+
+// unixSocketDir returns a SHORT temp directory for a unix socket. Using
+// t.TempDir() is unsafe on macOS: its path nests under
+// /var/folders/<hash>/T/<TestName><random>/001/ which pushes the socket path
+// past sun_path's 104-byte limit and makes bind fail with EINVAL.
+func unixSocketDir(t *testing.T) string {
+	t.Helper()
+	// os.TempDir() is short (e.g. /var/folders/<hash>/T); a short random
+	// prefix keeps the resulting socket path well under the sun_path limit.
+	dir, err := os.MkdirTemp("", "wssh-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// TestUnixSocketAddrFitsSunPathLimit: the generated unix socket path must be
+// short enough for macOS's 104-byte sun_path bound. On GitHub's macOS runners
+// os.TempDir() is already deep, so the socket dir must not add the test name.
+func TestUnixSocketAddrFitsSunPathLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix socket path limit does not apply on Windows")
+	}
+	sock := filepath.Join(unixSocketDir(t), "agent.sock")
+	if len(sock) >= macOSSunPathLimit {
+		t.Fatalf("socket path %d bytes exceeds macOS sun_path limit of %d: %s", len(sock), macOSSunPathLimit, sock)
+	}
 }
 
 func randSuffix() string {
