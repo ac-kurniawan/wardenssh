@@ -176,6 +176,11 @@ func (p *HostListPane) CurrentScope() string {
 	return p.hostList.Scope()
 }
 
+// SetScope sets the current scope label (programmatically, for tests).
+func (p *HostListPane) SetScope(s string) {
+	p.hostList.SetScope(s)
+}
+
 // TriggerConnect fires the connect callback for the currently selected entry.
 // Used in tests to avoid simulating key events.
 func (p *HostListPane) TriggerConnect() {
@@ -212,13 +217,10 @@ func (p *HostListPane) Refresh() {
 	p.entries = p.hostList.Visible()
 	p.list.Clear()
 
-	scope := p.hostList.Scope()
-	if scope == "" {
-		scope = "all"
-	}
-	title := fmt.Sprintf(" Hosts (scope: %s) ", scope)
+	label := scopeLabel(p.hostList.Scope())
+	title := fmt.Sprintf(" Hosts (scope: %s) ", label)
 	if p.syncStatus != "" {
-		title = fmt.Sprintf(" Hosts (scope: %s) • %s ", scope, p.syncStatus)
+		title = fmt.Sprintf(" Hosts (scope: %s) • %s ", label, p.syncStatus)
 	}
 	p.list.SetTitle(title)
 
@@ -228,6 +230,20 @@ func (p *HostListPane) Refresh() {
 
 	if len(p.entries) > 0 {
 		p.list.SetCurrentItem(0)
+	}
+}
+
+// scopeLabel maps a raw source label to a human-friendly display name:
+// "" (all) -> "all", "file" -> "~/.ssh/config", anything else (a vault) is
+// shown as-is (the vault name, e.g. "vw").
+func scopeLabel(scope string) string {
+	switch scope {
+	case "":
+		return "all"
+	case "file":
+		return "~/.ssh/config"
+	default:
+		return scope
 	}
 }
 

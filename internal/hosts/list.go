@@ -76,10 +76,14 @@ func (l *List) Tab() {
 func (l *List) SetFilter(f string) { l.filter = f }
 
 // Visible returns the entries in the current scope matching the current filter.
+// Entries with an empty HostName (unlaunchable) are always hidden.
 func (l *List) Visible() []Entry {
 	scope := l.Scope()
 	var out []Entry
 	for _, e := range l.entries {
+		if e.HostName == "" {
+			continue // unlaunchable — hide
+		}
 		if scope != "" && e.Source != scope {
 			continue
 		}
@@ -160,20 +164,26 @@ func (l *List) setLive(alias, source string, live bool) {
 	}
 }
 
-// deriveScopes produces the ordered scope cycle.
+// deriveScopes produces the ordered scope cycle: "" (all) first, then each
+// vault source in stable order, then "file" last. A source is a vault scope
+// if its label is anything other than "file" (the runtime label is the vault
+// config name, e.g. "vw" — not "vw:<name>"). Sources whose entries all have
+// an empty HostName are skipped (nothing launchable to show in that scope).
 func (l *List) deriveScopes() []string {
 	var vaults []string
 	seenVault := map[string]bool{}
 	hasFile := false
 	for _, e := range l.entries {
+		if e.HostName == "" {
+			continue // not launchable; never contributes a scope
+		}
 		switch {
 		case e.Source == "file":
 			hasFile = true
-		case strings.HasPrefix(e.Source, "vw:"):
-			name := e.Source
-			if !seenVault[name] {
-				seenVault[name] = true
-				vaults = append(vaults, name)
+		case e.Source != "":
+			if !seenVault[e.Source] {
+				seenVault[e.Source] = true
+				vaults = append(vaults, e.Source)
 			}
 		}
 	}

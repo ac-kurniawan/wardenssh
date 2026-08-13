@@ -53,6 +53,22 @@ func TestHostListPaneTabCyclesScope(t *testing.T) {
 	}
 }
 
+// TestHostListPaneTitleShowsFriendlyScope: the list title shows a friendly
+// scope label — "all" for all sources, "~/.ssh/config" for the file source.
+func TestHostListPaneTitleShowsFriendlyScope(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.Refresh()
+	if !strings.Contains(pane.Title(), "all") {
+		t.Errorf("title = %q, want it to contain 'all'", pane.Title())
+	}
+
+	pane.SetScope("file")
+	pane.Refresh()
+	if !strings.Contains(pane.Title(), "~/.ssh/config") {
+		t.Errorf("title = %q, want it to contain '~/.ssh/config'", pane.Title())
+	}
+}
+
 func TestHostListPaneConnectCallback(t *testing.T) {
 	pane := tviewui.NewHostListPane(sampleHostList())
 	pane.Refresh()

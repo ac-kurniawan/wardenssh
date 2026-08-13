@@ -32,6 +32,51 @@ func TestScopesBuiltFromSources(t *testing.T) {
 	}
 }
 
+// TestScopesIncludeRuntimeVaultLabel: the runtime vault source label is the
+// vault's config name (e.g. "vw"), NOT "vw:<name>". deriveScopes must treat
+// any non-file source as a vault scope so the cycle includes vaults.
+func TestScopesIncludeRuntimeVaultLabel(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "prod-db-01", HostName: "10.0.0.5", Source: "file"},
+		{Alias: "gitlab", HostName: "10.1.0.9", Source: "vw"},
+	})
+	got := l.Scopes()
+	if !contains(got, "vw") {
+		t.Errorf("Scopes = %v, want it to include the vault label 'vw'", got)
+	}
+	if !contains(got, "file") {
+		t.Errorf("Scopes = %v, want it to include 'file'", got)
+	}
+}
+
+// TestVisibleSkipsEmptyHost: entries with an empty HostName (unlaunchable)
+// must be hidden from the visible list.
+func TestVisibleSkipsEmptyHost(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "good", HostName: "10.0.0.5", Source: "file"},
+		{Alias: "bad", HostName: "", Source: "file"},
+	})
+	vis := l.Visible()
+	if len(vis) != 1 || vis[0].Alias != "good" {
+		t.Errorf("Visible = %+v, want only [good] (empty-host hidden)", vis)
+	}
+}
+
+// TestScopesSkipEmptyVault: a vault source whose entries all have an empty
+// HostName must not appear as a scope (nothing to show in it).
+func TestScopesSkipEmptyVault(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "good", HostName: "10.0.0.5", Source: "file"},
+		{Alias: "empty", HostName: "", Source: "vw:empty"},
+	})
+	if contains(l.Scopes(), "vw:empty") {
+		t.Errorf("Scopes = %v, want empty vault scope 'vw:empty' skipped", l.Scopes())
+	}
+	if !contains(l.Scopes(), "file") {
+		t.Errorf("Scopes = %v, want 'file' scope present", l.Scopes())
+	}
+}
+
 // TestVisibleAllScope: scope "" (all) returns every entry.
 func TestVisibleAllScope(t *testing.T) {
 	l := hosts.NewList(sampleEntries())
@@ -172,7 +217,7 @@ func contains(s []string, v string) bool {
 // appear in All() and the scope cycle includes the new vault source.
 func TestMergeAppendsVaultEntriesAndRecomputesScopes(t *testing.T) {
 	l := hosts.NewList([]hosts.Entry{
-		{Alias: "prod-db-01", Source: "file"},
+		{Alias: "prod-db-01", HostName: "10.0.0.5", Source: "file"},
 	})
 
 	// Before merge: only file scope.
@@ -183,8 +228,8 @@ func TestMergeAppendsVaultEntriesAndRecomputesScopes(t *testing.T) {
 
 	// Merge vault entries.
 	l.Merge([]hosts.Entry{
-		{Alias: "gitlab", Source: "vw:personal"},
-		{Alias: "ci-box", Source: "vw:personal"},
+		{Alias: "gitlab", HostName: "10.1.0.9", Source: "vw:personal"},
+		{Alias: "ci-box", HostName: "10.1.0.10", Source: "vw:personal"},
 	})
 
 	// After merge: vault entries present + scope includes vw:personal.
@@ -201,11 +246,11 @@ func TestMergeAppendsVaultEntriesAndRecomputesScopes(t *testing.T) {
 // TestMergePreservesLiveFlags: live sessions on existing entries survive merge.
 func TestMergePreservesLiveFlags(t *testing.T) {
 	l := hosts.NewList([]hosts.Entry{
-		{Alias: "prod-db-01", Source: "file"},
+		{Alias: "prod-db-01", HostName: "10.0.0.5", Source: "file"},
 	})
 	l.MarkLive("prod-db-01", "file")
 
-	l.Merge([]hosts.Entry{{Alias: "vault-host", Source: "vw:personal"}})
+	l.Merge([]hosts.Entry{{Alias: "vault-host", HostName: "10.1.0.9", Source: "vw:personal"}})
 
 	for _, e := range l.All() {
 		if e.Alias == "prod-db-01" && e.Source == "file" && !e.Live {
@@ -217,7 +262,7 @@ func TestMergePreservesLiveFlags(t *testing.T) {
 // TestMergeResetsFilter: merge re-applies the current filter to include new entries.
 func TestMergeResetsFilter(t *testing.T) {
 	l := hosts.NewList([]hosts.Entry{
-		{Alias: "prod-db-01", Source: "file"},
+		{Alias: "prod-db-01", HostName: "10.0.0.5", Source: "file"},
 	})
 	l.SetFilter("git")
 
@@ -226,7 +271,7 @@ func TestMergeResetsFilter(t *testing.T) {
 		t.Fatalf("pre-merge visible = %d, want 0", len(vis))
 	}
 
-	l.Merge([]hosts.Entry{{Alias: "gitlab", Source: "vw:personal"}})
+	l.Merge([]hosts.Entry{{Alias: "gitlab", HostName: "10.1.0.9", Source: "vw:personal"}})
 
 	// After merge: filter matches the new vault entry.
 	vis := l.Visible()
