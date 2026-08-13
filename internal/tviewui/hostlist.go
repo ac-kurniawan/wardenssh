@@ -162,6 +162,9 @@ func (p *HostListPane) SetFilter(text string) {
 	p.hostList.SetFilter(text)
 }
 
+// FilterText returns the current filter input text.
+func (p *HostListPane) FilterText() string { return p.filter.GetText() }
+
 // TabNext advances the scope cycle (wraps around).
 func (p *HostListPane) TabNext() {
 	p.hostList.Tab()

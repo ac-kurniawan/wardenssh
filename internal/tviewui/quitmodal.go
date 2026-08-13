@@ -1,12 +1,13 @@
 package tviewui
 
 import (
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
 // QuitModal is the quit-confirmation modal (Q31/C). Shown when the user
-// presses 'q' or Ctrl+C while live sessions exist. Options: Kill all (default),
-// Detach, Cancel.
+// presses 'q', Ctrl+C, or Escape at the host list. Options (keybindings in
+// parentheses): Kill all (k), Detach (d), Cancel (c/Escape).
 type QuitModal struct {
 	modal     *tview.Modal
 	onKillAll func()
@@ -26,10 +27,29 @@ func NewQuitModal() *QuitModal {
 				q.triggerKillAll()
 			case 1:
 				q.triggerDetach()
-			case 2:
+			case 2, -1: // -1 = Escape pressed in the modal
 				q.triggerCancel()
 			}
 		})
+	// Keyboard shortcuts k/d/c/Escape captured before the modal's default
+	// handler (which only acts when the frame has focus).
+	q.modal.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch {
+		case event.Key() == tcell.KeyEscape:
+			q.triggerCancel()
+			return nil
+		case event.Rune() == 'k':
+			q.triggerKillAll()
+			return nil
+		case event.Rune() == 'd':
+			q.triggerDetach()
+			return nil
+		case event.Rune() == 'c':
+			q.triggerCancel()
+			return nil
+		}
+		return event
+	})
 	return q
 }
 
@@ -53,6 +73,13 @@ func (q *QuitModal) TriggerDetach() { q.triggerDetach() }
 
 // TriggerCancel fires the Cancel callback (for tests).
 func (q *QuitModal) TriggerCancel() { q.triggerCancel() }
+
+// TriggerKey routes a key event through the modal's input capture (tests).
+func (q *QuitModal) TriggerKey(event *tcell.EventKey) {
+	if h := q.modal.InputHandler(); h != nil {
+		h(event, func(tview.Primitive) {})
+	}
+}
 
 func (q *QuitModal) triggerKillAll() {
 	if q.onKillAll != nil {

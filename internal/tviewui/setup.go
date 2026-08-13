@@ -84,7 +84,11 @@ type SetupModal struct {
 	mu sync.Mutex
 }
 
-// NewSetupModal builds the vault unlock modal.
+// NewSetupModal builds the vault unlock modal. The master password is always
+// required: a refresh token alone cannot derive the vault symmetric key (it is
+// wrapped by the master key derived from the password), so auto-login is not
+// possible without storing keys (which v0 does not do). The password prompt is
+// shown unconditionally.
 func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List, noKeyring ...bool) *SetupModal {
 	nk := false
 	if len(noKeyring) > 0 {
@@ -101,79 +105,7 @@ func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List
 		AddItem(nil, 0, 1, false).
 		AddItem(m.form, 9, 0, true).
 		AddItem(nil, 0, 1, false)
-	if !m.noKeyring {
-		m.TryAutoLogin()
-	}
 	return m
-}
-
-// TryAutoLogin attempts auto-login using a stored refresh token from the OS keyring for the current vault.
-// If a valid token is present and refresh succeeds, it syncs the vault and advances setup.
-// If the token is missing, invalid, or refresh fails, it silently falls back to master password entry.
-func (m *SetupModal) TryAutoLogin() {
-	m.mu.Lock()
-	if m.noKeyring || m.loggingIn || m.idx >= len(m.vaults) {
-		m.mu.Unlock()
-		return
-	}
-	v := m.vaults[m.idx]
-	cf := m.customFields
-	m.mu.Unlock()
-
-	tok, err := keyringGetRefreshToken(v.Name)
-	if err != nil || tok == "" {
-		return
-	}
-
-	m.mu.Lock()
-	if m.loggingIn || m.idx >= len(m.vaults) {
-		m.mu.Unlock()
-		return
-	}
-	m.loggingIn = true
-	m.mu.Unlock()
-
-	go func() {
-		c := vaultclientNew(v.Server)
-		sess, err := c.RefreshToken(tok)
-		if err != nil {
-			m.mu.Lock()
-			m.loggingIn = false
-			m.mu.Unlock()
-			return
-		}
-
-		if sess.RefreshToken != "" && sess.RefreshToken != tok {
-			_ = keyringSetRefreshToken(v.Name, sess.RefreshToken)
-		}
-
-		sr, err := c.Sync(sess)
-		if err != nil {
-			m.mu.Lock()
-			m.loggingIn = false
-			m.mu.Unlock()
-			return
-		}
-
-		src := vaultadapterNewSource(v.Name, sess, sr.Ciphers, cf)
-		m.mu.Lock()
-		m.loggingIn = false
-		m.sources = append(m.sources, src)
-		m.idx++
-		m.password = ""
-		m.updateTitle()
-		m.mu.Unlock()
-
-		m.checkDone()
-
-		m.mu.Lock()
-		done := m.idx >= len(m.vaults)
-		m.mu.Unlock()
-
-		if !done {
-			m.TryAutoLogin()
-		}
-	}()
 }
 
 func (m *SetupModal) buildForm() {

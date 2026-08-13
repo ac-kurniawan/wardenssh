@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
+
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
@@ -50,8 +52,69 @@ func TestAppQuitWithNoLiveSessions(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
 	quit := app.RequestQuit()
-	if !quit {
-		t.Error("expected RequestQuit to return true (immediate quit) with no live sessions")
+	if quit {
+		t.Error("expected RequestQuit to return false (always show confirmation modal)")
+	}
+	if !app.InQuitModal() {
+		t.Fatal("expected quit confirmation modal even with no live sessions")
+	}
+}
+
+// TestAppEscAtHomeShowsQuitModal: pressing Escape in the host list (home)
+// must open the quit confirmation modal, not quit directly.
+func TestAppEscAtHomeShowsQuitModal(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	if app.InQuitModal() {
+		t.Fatal("expected no quit modal before Escape")
+	}
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if !app.InQuitModal() {
+		t.Fatal("expected quit confirmation modal after Escape at home")
+	}
+}
+
+// TestAppQAtHomeShowsQuitModal: pressing 'q' with no live sessions must open
+// the quit confirmation modal (not quit directly) per the user's requirement.
+func TestAppQAtHomeShowsQuitModal(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyRune, 'q', tcell.ModNone))
+	if !app.InQuitModal() {
+		t.Fatal("expected quit confirmation modal after 'q' at home")
+	}
+}
+
+// TestAppQuitModalCancelReturnsToList: 'c' in the quit modal returns to the
+// host list and dismisses the modal.
+func TestAppQuitModalCancelReturnsToList(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.RequestQuit()
+	if !app.InQuitModal() {
+		t.Fatal("expected quit modal before cancel")
+	}
+	app.CancelQuit()
+	if app.InQuitModal() {
+		t.Fatal("expected quit modal dismissed after cancel")
+	}
+}
+
+// TestAppQuitModalKeybindingsKillsAll: 'k' in the quit modal triggers kill-all.
+func TestAppQuitModalKeybindingsKillsAll(t *testing.T) {
+	hl := sampleHostList()
+	hl.MarkLive("prod-db-01", "file")
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.RequestQuit()
+	if !app.InQuitModal() {
+		t.Fatal("expected quit modal")
+	}
+	app.KillAllQuit()
+	if app.InQuitModal() {
+		t.Fatal("expected quit modal dismissed after kill-all")
+	}
+	if liveCount := liveCountOf(app); liveCount != 0 {
+		t.Errorf("expected no live sessions after kill-all, got %d", liveCount)
 	}
 }
 
@@ -116,6 +179,16 @@ func TestAppTriggerSyncOfflineStatusOnSyncError(t *testing.T) {
 
 var _ = config.CustomFields{}
 var _ = vaultadapter.Client{}
+
+func liveCountOf(app *tviewui.App) int {
+	n := 0
+	for _, e := range app.HostList().All() {
+		if e.Live {
+			n++
+		}
+	}
+	return n
+}
 
 func TestAppSetupOnCompleteFromGoroutine(t *testing.T) {
 	tviewui.SetKeyringGetRefreshTokenForTest(func(vName string) (string, error) {
