@@ -83,10 +83,6 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 			p.TriggerRefresh()
 			return nil
 		}
-		if event.Rune() == 'd' || event.Rune() == 'D' {
-			p.TriggerDelete()
-			return nil
-		}
 		return event
 	})
 
