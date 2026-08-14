@@ -246,6 +246,13 @@ type SyncResponse struct {
 	Ciphers []Cipher `json:"ciphers"`
 }
 
+// Login is a Type-1 (login) item's native username/password, both encrypted
+// strings decrypted via Session.DecryptField at use time.
+type Login struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 // Cipher is a vault item as returned by /api/sync or /api/ciphers.
 // SSH-Key items have Type==5 on VaultWarden; login items are Type==1.
 type Cipher struct {
@@ -259,6 +266,7 @@ type Cipher struct {
 		KeyFingerprint string `json:"keyFingerprint"`
 		Passphrase     string `json:"passphrase"`
 	} `json:"sshKey,omitempty"`
+	Login  *Login        `json:"login,omitempty"`
 	Fields []CustomField `json:"fields,omitempty"`
 }
 

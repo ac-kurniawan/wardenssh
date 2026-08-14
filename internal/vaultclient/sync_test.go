@@ -158,3 +158,38 @@ func TestSyncOnlyReturnsSshKeyItemsWithPrivateKey(t *testing.T) {
 		t.Errorf("expected 1 cipher with sshKey, got %d", sshCount)
 	}
 }
+
+// TestSyncParsesLoginObject: a Type-1 login cipher's username+password are
+// populated from the camelCase "login" object.
+func TestSyncParsesLoginObject(t *testing.T) {
+	ciphersJSON := `[
+		{
+			"id": "login-1",
+			"name": "2.enc==",
+			"type": 1,
+			"login": {"username": "2.u==", "password": "2.p=="}
+		}
+	]`
+	srv := fakeCiphersServer(t, ciphersJSON)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	sess := &Session{AccessToken: "tok"}
+	sr, err := c.Sync(sess)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sr.Ciphers) != 1 {
+		t.Fatalf("expected 1 cipher, got %d", len(sr.Ciphers))
+	}
+	ci := sr.Ciphers[0]
+	if ci.Login == nil {
+		t.Fatal("Login is nil")
+	}
+	if ci.Login.Username != "2.u==" {
+		t.Errorf("Username = %q, want 2.u==", ci.Login.Username)
+	}
+	if ci.Login.Password != "2.p==" {
+		t.Errorf("Password = %q, want 2.p==", ci.Login.Password)
+	}
+}
