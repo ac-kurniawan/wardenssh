@@ -4,11 +4,13 @@
 // Windows, pty on *nix). A console handle exists on stdin, which is the
 // discriminating condition the risk is about: with a console attached, ssh
 // would normally prompt on the tty, so only SSH_ASKPASS_REQUIRE=force makes it
-// consult the askpass helper. The proof is differential, both under a PTY:
-// ssh + askpass helper with the CORRECT password succeeds; with the WRONG
-// password it fails with Permission denied. Together they prove askpass is
-// genuinely consulted (wrong pass fails) AND force is honored over a console
-// (correct pass succeeds).
+// consult the askpass helper. The helper is the WardenSSH binary itself,
+// re-exec'd in askpass mode (the production contract), so the spike also
+// gates the WARDENSSH_ASKPASS=1 helper-mode flag. The proof is differential,
+// both under a PTY: ssh + helper with the CORRECT password succeeds; with the
+// WRONG password it fails with Permission denied; and with the correct
+// password but the helper-mode flag MISSING it also fails — proving both the
+// helper is genuinely consulted and the flag is load-bearing.
 //
 // GATED: skipped unless WARDENSSH_ASKPASS_SPIKE=1 (needs a provisioned
 // password-auth sshd target; never run in normal testing/CI).
@@ -41,45 +43,33 @@ const (
 	drainGrace = 250 * time.Millisecond
 )
 
-// buildAskpass compiles a tiny askpass helper into a platform executable (the
-// same contract WardenSSH's runAskpass implements: print the password from
-// WARDENSSH_ASKPASS_PASS). A shell script is NOT viable here — the spawned
-// ssh.exe is a native Windows process and its spawn path has no sh.exe; the
-// real design (Task 7) also re-execs the warden binary itself as the helper,
-// so an .exe is the faithful stand-in.
-func buildAskpass(t *testing.T) string {
+// buildWarden compiles the WardenSSH binary itself (module root package main)
+// into a temp path — the SAME binary ssh spawns as the SSH_ASKPASS helper in
+// production. Unlike a toy helper, this exercises the real askpass gate
+// (main.runAskpass requires WARDENSSH_ASKPASS=1), so the spike covers the
+// exact env contract EnvForAskpass sets — a bug where the flag was missing
+// slipped past the earlier toy-helper version and caused "Permission denied".
+func buildWarden(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	src := filepath.Join(dir, "main.go")
-	code := `package main
-import (
-	"fmt"
-	"os"
-)
-func main() {
-	fmt.Print(os.Getenv("WARDENSSH_ASKPASS_PASS"))
-}`
-	if err := os.WriteFile(src, []byte(code), 0o600); err != nil {
-		t.Fatalf("write askpass helper source: %v", err)
-	}
-	exe := filepath.Join(dir, "askpass")
+	exe := filepath.Join(t.TempDir(), "wardenssh")
 	if runtime.GOOS == "windows" {
 		exe += ".exe"
 	}
-	if out, err := exec.Command("go", "build", "-o", exe, src).CombinedOutput(); err != nil {
-		t.Fatalf("go build askpass helper: %v\n%s", err, out)
+	if out, err := exec.Command("go", "build", "-o", exe, "../..").CombinedOutput(); err != nil {
+		t.Fatalf("go build warden binary: %v\n%s", err, out)
 	}
 	return exe
 }
 
 // runSSH spawns ssh under a real PTY (go-pty, ConPTY on Windows) with the
-// askpass env, and returns (merged PTY output, exit error). This mirrors the
-// TUI's spawn path (internal/session), so a console handle exists on ssh's
-// stdin and SSH_ASKPASS_REQUIRE=force is what makes askpass work. A hung ssh
-// is killed after spikeWait and reported as an error, so a force-broken build
-// (ssh blocking on a console password prompt) fails the test instead of
-// hanging it.
-func runSSH(t *testing.T, pass string) (string, error) {
+// warden binary as the askpass helper, and returns (merged PTY output, exit
+// error). This mirrors the TUI's spawn path (internal/session), so a console
+// handle exists on ssh's stdin and SSH_ASKPASS_REQUIRE=force is what makes
+// askpass work. askpassFlag toggles WARDENSSH_ASKPASS=1 — the helper-mode
+// gate runAskpass requires; without it the helper launches the launcher TUI
+// and ssh receives an empty password. A hung ssh is killed after spikeWait
+// and reported as an error.
+func runSSH(t *testing.T, pass string, askpassFlag bool) (string, error) {
 	t.Helper()
 	p, err := pty.New()
 	if err != nil {
@@ -95,11 +85,15 @@ func runSSH(t *testing.T, pass string) (string, error) {
 		testUser+"@"+testHost,
 		"echo ASKPASS-OK",
 	)
-	c.Env = append(os.Environ(),
-		"SSH_ASKPASS="+buildAskpass(t),
+	env := []string{
+		"SSH_ASKPASS=" + buildWarden(t),
 		"SSH_ASKPASS_REQUIRE=force",
-		"WARDENSSH_ASKPASS_PASS="+pass,
-	)
+		"WARDENSSH_ASKPASS_PASS=" + pass,
+	}
+	if askpassFlag {
+		env = append(env, "WARDENSSH_ASKPASS=1")
+	}
+	c.Env = append(os.Environ(), env...)
 	if err := c.Start(); err != nil {
 		_ = p.Close()
 		t.Fatalf("start ssh under PTY: %v", err)
@@ -171,7 +165,7 @@ func TestAskpassCorrectPasswordAuthenticates(t *testing.T) {
 	if os.Getenv("WARDENSSH_ASKPASS_SPIKE") != "1" {
 		t.Skip("askpass spike skipped (set WARDENSSH_ASKPASS_SPIKE=1 to run)")
 	}
-	out, err := runSSH(t, goodPass)
+	out, err := runSSH(t, goodPass, true)
 	if err != nil {
 		t.Fatalf("ssh with correct askpass password failed: %v\noutput: %s", err, out)
 	}
@@ -184,11 +178,29 @@ func TestAskpassWrongPasswordFails(t *testing.T) {
 	if os.Getenv("WARDENSSH_ASKPASS_SPIKE") != "1" {
 		t.Skip("askpass spike skipped (set WARDENSSH_ASKPASS_SPIKE=1 to run)")
 	}
-	out, err := runSSH(t, badPass)
+	out, err := runSSH(t, badPass, true)
 	if err == nil {
 		t.Fatal("ssh with WRONG askpass password unexpectedly succeeded")
 	}
 	if !bytes.Contains([]byte(out), []byte("Permission denied")) {
 		t.Fatalf("expected Permission denied, got: %q", out)
+	}
+}
+
+// TestAskpassWithoutHelperFlagFails: regression guard — with the CORRECT
+// password but WARDENSSH_ASKPASS unset, the re-exec'd helper launches the
+// launcher TUI instead of printing the password, so ssh receives an empty
+// password and auth fails. This is the exact bug that caused "Permission
+// denied" for real users before EnvForAskpass set the flag.
+func TestAskpassWithoutHelperFlagFails(t *testing.T) {
+	if os.Getenv("WARDENSSH_ASKPASS_SPIKE") != "1" {
+		t.Skip("askpass spike skipped (set WARDENSSH_ASKPASS_SPIKE=1 to run)")
+	}
+	out, err := runSSH(t, goodPass, false)
+	if err == nil {
+		t.Fatal("ssh without WARDENSSH_ASKPASS=1 unexpectedly succeeded")
+	}
+	if !bytes.Contains([]byte(out), []byte("Permission denied")) {
+		t.Fatalf("expected Permission denied (empty helper output), got: %q", out)
 	}
 }

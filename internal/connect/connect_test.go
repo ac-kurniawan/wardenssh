@@ -223,6 +223,7 @@ func TestEnvForAskpass(t *testing.T) {
 		"SSH_AUTH_SOCK":          `\\.\pipe\wardenssh-agent`,
 		"SSH_ASKPASS":            `C:\wardenssh\wardenssh.exe`,
 		"SSH_ASKPASS_REQUIRE":    "force",
+		"WARDENSSH_ASKPASS":      "1",
 		"WARDENSSH_ASKPASS_PASS": "hunter2",
 	}
 	if len(env) != len(want) {

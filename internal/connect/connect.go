@@ -206,14 +206,17 @@ func SSHArgvPassword(entry hosts.Entry) []string {
 }
 
 // EnvForAskpass returns the environment variables ssh needs to prompt for the
-// vault password via an SSH_ASKPASS helper. SSH_ASKPASS_REQUIRE=force is
-// required because ssh runs attached to a PTY where askpass is otherwise
-// ignored (OpenSSH >= 8.4).
+// vault password via an SSH_ASKPASS helper that is this binary re-executed in
+// askpass mode. SSH_ASKPASS_REQUIRE=force is required because ssh runs
+// attached to a PTY where askpass is otherwise ignored (OpenSSH >= 8.4), and
+// WARDENSSH_ASKPASS=1 is the flag the re-exec'd process checks to enter helper
+// mode (main.runAskpass) instead of launching the launcher TUI.
 func EnvForAskpass(agentPipe, password string) []string {
 	return []string{
 		"SSH_AUTH_SOCK=" + agentPipe,
 		"SSH_ASKPASS=" + askpassExecutable(),
 		"SSH_ASKPASS_REQUIRE=force",
+		"WARDENSSH_ASKPASS=1",
 		"WARDENSSH_ASKPASS_PASS=" + password,
 	}
 }
