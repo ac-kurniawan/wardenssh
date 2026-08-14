@@ -2,6 +2,7 @@ package connect
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
@@ -164,5 +165,145 @@ func TestFindVaultItem(t *testing.T) {
 	_, _, err = findVaultItem(fc, hosts.Entry{Alias: "nonexistent", Source: "vw:personal"})
 	if err == nil {
 		t.Error("expected error but got nil")
+	}
+}
+
+func TestSSHArgvPassword(t *testing.T) {
+	origSSHBin := SSHBin
+	defer func() { SSHBin = origSSHBin }()
+	SSHBin = "ssh"
+
+	tests := []struct {
+		name     string
+		entry    hosts.Entry
+		expected []string
+	}{
+		{
+			name:     "password host defaults to root",
+			entry:    hosts.Entry{Alias: "prod-db", HostName: "10.0.0.9", Source: "vw:personal", AuthKind: "password"},
+			expected: []string{"ssh", "-o", "StrictHostKeyChecking=accept-new", "root@10.0.0.9"},
+		},
+		{
+			name:     "password host with user and port",
+			entry:    hosts.Entry{Alias: "prod-db", HostName: "10.0.0.9", User: "admin", Port: "2222", Source: "vw:personal", AuthKind: "password"},
+			expected: []string{"ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", "2222", "admin@10.0.0.9"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SSHArgvPassword(tc.entry)
+			if len(got) != len(tc.expected) {
+				t.Fatalf("expected argv len %v, got %v\ngot: %v", len(tc.expected), len(got), got)
+			}
+			for i := range got {
+				if got[i] != tc.expected[i] {
+					t.Errorf("argv mismatch at index %d: expected %q, got %q", i, tc.expected[i], got[i])
+				}
+			}
+		})
+	}
+}
+
+func TestSSHArgvPasswordOmitsBatchMode(t *testing.T) {
+	argv := SSHArgvPassword(hosts.Entry{Alias: "h", HostName: "h.internal", Source: "vw:personal", AuthKind: "password"})
+	for _, a := range argv {
+		if a == "BatchMode=yes" {
+			t.Errorf("password argv must not set BatchMode (forbids password auth): %v", argv)
+		}
+	}
+}
+
+func TestEnvForAskpass(t *testing.T) {
+	orig := askpassExecutable
+	askpassExecutable = func() string { return `C:\wardenssh\wardenssh.exe` }
+	defer func() { askpassExecutable = orig }()
+
+	env := EnvForAskpass(`\\.\pipe\wardenssh-agent`, "hunter2")
+	want := map[string]string{
+		"SSH_AUTH_SOCK":          `\\.\pipe\wardenssh-agent`,
+		"SSH_ASKPASS":            `C:\wardenssh\wardenssh.exe`,
+		"SSH_ASKPASS_REQUIRE":    "force",
+		"WARDENSSH_ASKPASS_PASS": "hunter2",
+	}
+	if len(env) != len(want) {
+		t.Fatalf("got %d env entries, want %d: %v", len(env), len(want), env)
+	}
+	for _, kv := range env {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
+			t.Fatalf("bad env entry %q", kv)
+		}
+		if parts[1] != want[parts[0]] {
+			t.Errorf("%s = %q, want %q", parts[0], parts[1], want[parts[0]])
+		}
+	}
+}
+
+func TestPrepareLoginCreds(t *testing.T) {
+	fc := &fakeClient{sources: []vault.Source{
+		&fakeSource{name: "vw:personal", items: []vault.Item{
+			{Name: "prod-db", EncUsername: "admin", EncPassword: "s3cret"},
+		}},
+	}}
+	user, pass, err := PrepareLoginCreds(hosts.Entry{Alias: "prod-db", Source: "vw:personal"}, fc)
+	if err != nil {
+		t.Fatalf("PrepareLoginCreds: %v", err)
+	}
+	if string(user) != "admin" || string(pass) != "s3cret" {
+		t.Errorf("user=%q pass=%q, want admin/s3cret", user, pass)
+	}
+}
+
+func TestCommandForPasswordHost(t *testing.T) {
+	fc := &fakeClient{sources: []vault.Source{
+		&fakeSource{name: "vw:personal", items: []vault.Item{
+			{Name: "prod-db", Kind: "login", EncUsername: "admin", EncPassword: "s3cret"},
+		}},
+	}}
+	entry := hosts.Entry{Alias: "prod-db", HostName: "10.0.0.9", Source: "vw:personal", AuthKind: "password"}
+	argv, env, err := CommandFor(entry, "sess-1", `\\.\pipe\wardenssh-agent`, fc, nil)
+	if err != nil {
+		t.Fatalf("CommandFor: %v", err)
+	}
+	for _, a := range argv {
+		if a == "BatchMode=yes" {
+			t.Errorf("password argv must not set BatchMode: %v", argv)
+		}
+	}
+	havePass := false
+	for _, kv := range env {
+		if kv == "WARDENSSH_ASKPASS_PASS=s3cret" {
+			havePass = true
+		}
+	}
+	if !havePass {
+		t.Errorf("env missing WARDENSSH_ASKPASS_PASS=s3cret: %v", env)
+	}
+}
+
+func TestCommandForPasswordHostWithoutVaultClient(t *testing.T) {
+	entry := hosts.Entry{Alias: "prod-db", HostName: "10.0.0.9", Source: "vw:personal", AuthKind: "password"}
+	if _, _, err := CommandFor(entry, "sess-1", "pipe", nil, nil); err == nil {
+		t.Fatal("expected error for password host with nil vault client")
+	}
+}
+
+func TestCommandForKeyHostMatchesSSHArgv(t *testing.T) {
+	entry := hosts.Entry{Alias: "ci-box", HostName: "10.1.0.10", Source: "vw:personal"}
+	argv, env, err := CommandFor(entry, "sess-1", "/tmp/agent.sock", nil, nil)
+	if err != nil {
+		t.Fatalf("CommandFor: %v", err)
+	}
+	want := SSHArgv(entry, "/tmp/agent.sock")
+	if len(argv) != len(want) {
+		t.Fatalf("argv = %v, want %v", argv, want)
+	}
+	for i := range argv {
+		if argv[i] != want[i] {
+			t.Errorf("argv[%d] = %q, want %q", i, argv[i], want[i])
+		}
+	}
+	if len(env) != 1 || env[0] != "SSH_AUTH_SOCK=/tmp/agent.sock" {
+		t.Errorf("env = %v, want SSH_AUTH_SOCK only", env)
 	}
 }

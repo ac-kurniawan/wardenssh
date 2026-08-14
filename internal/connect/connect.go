@@ -25,6 +25,15 @@ var SSHBin = "ssh"
 // Overridable for tests.
 var AgentPipePath = defaultAgentPipe
 
+// askpassExecutable returns the path ssh uses to spawn the SSH_ASKPASS helper
+// (the warden binary itself in askpass mode). Overridable for tests.
+var askpassExecutable = func() string {
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "wardenssh"
+}
+
 // Connector performs the full connect flow for a host entry.
 type Connector struct {
 	Agent *sshagent.Keyring
@@ -171,6 +180,77 @@ func SSHArgv(entry hosts.Entry, agentPipe string) []string {
 // agent pipe (SSH_AUTH_SOCK). The caller appends these to the child's env.
 func EnvForAgent(agentPipe string) []string {
 	return []string{"SSH_AUTH_SOCK=" + agentPipe}
+}
+
+// SSHArgvPassword builds the ssh argv for a password-credential host. Unlike
+// SSHArgv it omits BatchMode (which forbids password prompts); the password
+// reaches ssh via SSH_ASKPASS (see EnvForAskpass).
+func SSHArgvPassword(entry hosts.Entry) []string {
+	var args []string
+	args = append(args, SSHBin)
+	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+
+	if entry.Port != "" {
+		args = append(args, "-p", entry.Port)
+	}
+	if entry.ProxyJump != "" {
+		args = append(args, "-J", entry.ProxyJump)
+	}
+
+	user := entry.User
+	if user == "" {
+		user = "root"
+	}
+	args = append(args, user+"@"+entry.HostName)
+	return args
+}
+
+// EnvForAskpass returns the environment variables ssh needs to prompt for the
+// vault password via an SSH_ASKPASS helper. SSH_ASKPASS_REQUIRE=force is
+// required because ssh runs attached to a PTY where askpass is otherwise
+// ignored (OpenSSH >= 8.4).
+func EnvForAskpass(agentPipe, password string) []string {
+	return []string{
+		"SSH_AUTH_SOCK=" + agentPipe,
+		"SSH_ASKPASS=" + askpassExecutable(),
+		"SSH_ASKPASS_REQUIRE=force",
+		"WARDENSSH_ASKPASS_PASS=" + password,
+	}
+}
+
+// PrepareLoginCreds lazily decrypts the vault login credentials for a
+// password-credential host entry (RAM only).
+func PrepareLoginCreds(entry hosts.Entry, vc vault.Client) (username, password []byte, err error) {
+	item, src, err := findVaultItem(vc, entry)
+	if err != nil {
+		return nil, nil, fmt.Errorf("find vault item: %w", err)
+	}
+	return src.DecryptLogin(item)
+}
+
+// CommandFor builds the ssh argv + env for a host entry, branching on its
+// auth kind: password hosts get their login credentials lazily decrypted and
+// the askpass env; vault key hosts get their key loaded into the agent;
+// file hosts get the plain argv/env.
+func CommandFor(entry hosts.Entry, sessionID, agentPipe string, vc vault.Client, agent *sshagent.Keyring) (argv, env []string, err error) {
+	switch entry.AuthKind {
+	case "password":
+		if vc == nil {
+			return nil, nil, fmt.Errorf("connect: password host %q but no vault client", entry.Alias)
+		}
+		_, password, err := PrepareLoginCreds(entry, vc)
+		if err != nil {
+			return nil, nil, err
+		}
+		return SSHArgvPassword(entry), EnvForAskpass(agentPipe, string(password)), nil
+	default:
+		if entry.Source != "file" && vc != nil && agent != nil {
+			if err := PrepareAgentKey(entry, sessionID, vc, agent); err != nil {
+				return nil, nil, err
+			}
+		}
+		return SSHArgv(entry, agentPipe), EnvForAgent(agentPipe), nil
+	}
 }
 
 // findVaultItem locates the vault.Item + vault.Source matching a host entry
