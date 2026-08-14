@@ -287,6 +287,21 @@ func TestSourceItemsIncludesSSHLoginItems(t *testing.T) {
 		mkLogin("4", "no-host", "u", "p", []vaultclient.CustomField{
 			{Name: enc(t, sess, "type"), Value: enc(t, sess, "ssh"), Type: 0},
 		}),
+		// login with type=ssh + host but EMPTY password -> excluded (raw empty
+		// login.password — never encrypted, mirrors a vault with no password).
+		{
+			ID:   "5",
+			Name: enc(t, sess, "empty-pass"),
+			Type: 1,
+			Login: &vaultclient.Login{
+				Username: enc(t, sess, "u"),
+				Password: "",
+			},
+			Fields: []vaultclient.CustomField{
+				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.11"), Type: 0},
+				{Name: enc(t, sess, "type"), Value: enc(t, sess, "ssh"), Type: 0},
+			},
+		},
 	}
 
 	src := vaultadapter.NewSource("vw:personal", sess, ciphers, cf)

@@ -157,4 +157,3 @@ func TestFilterInputCaptureNavigatesAndConnects(t *testing.T) {
 		t.Errorf("expected connect callback for web-02 on Enter, got %s", connected.Alias)
 	}
 }
-

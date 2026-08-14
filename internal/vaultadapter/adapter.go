@@ -54,7 +54,7 @@ func (s *Source) Items() ([]vault.Item, error) {
 		}
 
 		switch {
-		case ci.Login != nil && strings.EqualFold(cf.Type, "ssh"):
+		case ci.Login != nil && ci.Login.Password != "" && strings.EqualFold(cf.Type, "ssh"):
 			// Login item tagged type=SSH -> password-credential host.
 			// Username is decrypted for display (User); the credentials stay
 			// encrypted for lazy decrypt at connect time (Q8/C pattern).
