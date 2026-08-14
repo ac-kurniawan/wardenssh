@@ -32,7 +32,14 @@ var version = "dev"
 // tests).
 var versionOutput io.Writer = os.Stdout
 
+// askpassOutput is the io.Writer for the SSH_ASKPASS helper mode (overridable
+// for tests). ssh spawns this binary and reads the password from stdout.
+var askpassOutput io.Writer = os.Stdout
+
 func main() {
+	if runAskpass() {
+		return
+	}
 	showVersion, noKeyring := parseFlags()
 	if showVersion {
 		printVersion()
@@ -42,6 +49,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "wardenssh:", err)
 		os.Exit(1)
 	}
+}
+
+// runAskpass detects the SSH_ASKPASS helper mode and prints the vault password
+// to stdout, exiting without touching config/vault/agent. Returns true when it
+// handled the request.
+func runAskpass() bool {
+	if os.Getenv("WARDENSSH_ASKPASS") != "1" {
+		return false
+	}
+	fmt.Fprint(askpassOutput, os.Getenv("WARDENSSH_ASKPASS_PASS"))
+	return true
 }
 
 // printVersion writes the version banner to versionOutput.
