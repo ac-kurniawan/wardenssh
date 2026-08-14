@@ -3,6 +3,7 @@ package tviewui
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -260,8 +261,36 @@ func (m *CreateModal) Submit() {
 		m.updateTitle()
 		return
 	}
+	if strings.ContainsAny(m.params.Alias, " \t\r\n") {
+		m.errMsg = "Alias / Name cannot contain spaces"
+		m.updateTitle()
+		return
+	}
 	if m.params.HostName == "" {
 		m.errMsg = "Hostname / IP is required"
+		m.updateTitle()
+		return
+	}
+	if strings.ContainsAny(m.params.HostName, " \t\r\n") {
+		m.errMsg = "Hostname / IP cannot contain spaces"
+		m.updateTitle()
+		return
+	}
+	if strings.ContainsAny(m.params.User, " \t\r\n") {
+		m.errMsg = "User cannot contain spaces"
+		m.updateTitle()
+		return
+	}
+	if m.params.Port != "" {
+		portNum, err := strconv.Atoi(m.params.Port)
+		if err != nil || portNum < 1 || portNum > 65535 {
+			m.errMsg = "Port must be a number between 1 and 65535"
+			m.updateTitle()
+			return
+		}
+	}
+	if strings.ContainsAny(m.params.ProxyJump, " \t\r\n") {
+		m.errMsg = "ProxyJump cannot contain spaces"
 		m.updateTitle()
 		return
 	}

@@ -170,6 +170,92 @@ func TestCreateModal_ValidationPasswordRequiredWhenAuthKindPassword(t *testing.T
 	}
 }
 
+func TestCreateModal_ValidationFailureInvalidPort(t *testing.T) {
+	invalidPorts := []string{"abc", "70000", "0", "-5"}
+	for _, p := range invalidPorts {
+		modal := tviewui.NewCreateModal([]string{"~/.ssh/config"})
+		submitted := false
+		modal.SetOnSubmit(func(p tviewui.CreateParams) error {
+			submitted = true
+			return nil
+		})
+
+		modal.SetAlias("valid-server")
+		modal.SetHostName("10.0.0.1")
+		modal.SetPort(p)
+		modal.Submit()
+
+		if submitted {
+			t.Errorf("submit should fail for invalid port %q", p)
+		}
+		if !strings.Contains(modal.Error(), "Port must be a number between 1 and 65535") {
+			t.Errorf("expected port error for %q, got: %s", p, modal.Error())
+		}
+	}
+}
+
+func TestCreateModal_ValidationFailureSpacesInFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		alias       string
+		host        string
+		user        string
+		proxy       string
+		expectedErr string
+	}{
+		{
+			name:        "spaces in alias",
+			alias:       "my server",
+			host:        "10.0.0.1",
+			expectedErr: "Alias / Name cannot contain spaces",
+		},
+		{
+			name:        "spaces in hostname",
+			alias:       "myserver",
+			host:        "10 . 0 . 0 . 1",
+			expectedErr: "Hostname / IP cannot contain spaces",
+		},
+		{
+			name:        "spaces in user",
+			alias:       "myserver",
+			host:        "10.0.0.1",
+			user:        "user name",
+			expectedErr: "User cannot contain spaces",
+		},
+		{
+			name:        "spaces in proxyjump",
+			alias:       "myserver",
+			host:        "10.0.0.1",
+			proxy:       "proxy jump",
+			expectedErr: "ProxyJump cannot contain spaces",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			modal := tviewui.NewCreateModal([]string{"~/.ssh/config"})
+			submitted := false
+			modal.SetOnSubmit(func(p tviewui.CreateParams) error {
+				submitted = true
+				return nil
+			})
+
+			modal.SetAlias(tt.alias)
+			modal.SetHostName(tt.host)
+			modal.SetUser(tt.user)
+			modal.SetProxyJump(tt.proxy)
+			modal.Submit()
+
+			if submitted {
+				t.Errorf("submit should fail validation for %s", tt.name)
+			}
+			if !strings.Contains(modal.Error(), tt.expectedErr) {
+				t.Errorf("expected error %q, got %q", tt.expectedErr, modal.Error())
+			}
+		})
+	}
+}
+
 func TestCreateModal_ValidationPasswordNotRequiredWhenAuthKindKey(t *testing.T) {
 	modal := tviewui.NewCreateModal([]string{"~/.ssh/config"})
 
