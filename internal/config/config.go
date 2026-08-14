@@ -27,6 +27,10 @@ type CustomFields struct {
 	User      string `json:"user"`
 	Port      string `json:"port"`
 	ProxyJump string `json:"proxyjump"`
+	// Type is the custom-field name whose value tags a Login item as an SSH
+	// credential (value "SSH", case-insensitive). Logins without it are not
+	// launchable.
+	Type string `json:"type"`
 }
 
 // UI holds non-sensitive user preferences for the launcher.
@@ -53,6 +57,7 @@ func Default() *Config {
 			User:      "user",
 			Port:      "port",
 			ProxyJump: "proxyjump",
+			Type:      "type",
 		},
 		UI:      UI{Sort: "name"},
 		Keyring: true,
@@ -131,6 +136,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.CustomFields.ProxyJump == "" {
 		cfg.CustomFields.ProxyJump = d.ProxyJump
+	}
+	if cfg.CustomFields.Type == "" {
+		cfg.CustomFields.Type = d.Type
 	}
 	if cfg.UI.Sort == "" {
 		cfg.UI.Sort = "name"

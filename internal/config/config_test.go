@@ -138,3 +138,25 @@ func TestLoadMalformedReturnsError(t *testing.T) {
 		t.Error("Load malformed: want error, got nil")
 	}
 }
+
+// TestLoadAppliesTypeFieldDefault: a minimal config gets default type="type".
+func TestLoadAppliesTypeFieldDefault(t *testing.T) {
+	cfg, err := config.Load(strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CustomFields.Type != "type" {
+		t.Errorf("CustomFields.Type default = %q, want type", cfg.CustomFields.Type)
+	}
+}
+
+// TestLoadParsesTypeOverride: an explicit custom_fields.type is honored.
+func TestLoadParsesTypeOverride(t *testing.T) {
+	cfg, err := config.Load(strings.NewReader(`{"custom_fields":{"type":"kind"}}`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CustomFields.Type != "kind" {
+		t.Errorf("CustomFields.Type = %q, want kind", cfg.CustomFields.Type)
+	}
+}
