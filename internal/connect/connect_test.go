@@ -120,6 +120,9 @@ func (f *fakeSource) DecryptPrivateKey(it vault.Item, pass string) ([]byte, erro
 	}
 	return []byte(it.EncPrivateKey), nil
 }
+func (f *fakeSource) DecryptLogin(it vault.Item) ([]byte, []byte, error) {
+	return []byte(it.EncUsername), []byte(it.EncPassword), nil
+}
 func (f *fakeSource) Sync() error { return nil }
 
 type fakeClient struct {

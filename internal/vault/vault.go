@@ -24,6 +24,12 @@ type Item struct {
 	EncPrivateKey string
 	// EncPassphrase is the still-encrypted passphrase field (Q14/C).
 	EncPassphrase string
+	// Kind is the item's credential kind: ""/"sshkey" (default) or "login".
+	Kind string
+	// EncUsername / EncPassword are the still-encrypted native login fields,
+	// lazily decrypted at connect time via DecryptLogin.
+	EncUsername string
+	EncPassword string
 }
 
 // Source is one named, authenticated vault (a source label like "vw:personal").
@@ -38,6 +44,9 @@ type Source interface {
 	// raw private key bytes (PEM/OpenSSH) for loading into the agent. This is
 	// called at connect time, not at list-build time.
 	DecryptPrivateKey(item Item, passphrase string) ([]byte, error)
+	// DecryptLogin decrypts the item's native login username + password into
+	// raw bytes. Called at connect time, not at list-build time.
+	DecryptLogin(item Item) (username, password []byte, err error)
 }
 
 // Client is the multi-vault aggregate (Q16/B).
@@ -80,6 +89,12 @@ func (s *FakeSource) Items() ([]Item, error) {
 // as-is (it's typically pre-set with plaintext key bytes for tests).
 func (s *FakeSource) DecryptPrivateKey(item Item, passphrase string) ([]byte, error) {
 	return []byte(item.EncPrivateKey), nil
+}
+
+// DecryptLogin satisfies Source. For the fake, returns the EncUsername and
+// EncPassword verbatim as plaintext bytes (tests pre-set them as plaintext).
+func (s *FakeSource) DecryptLogin(item Item) ([]byte, []byte, error) {
+	return []byte(item.EncUsername), []byte(item.EncPassword), nil
 }
 
 // Sync satisfies Source for the fake (no-op).

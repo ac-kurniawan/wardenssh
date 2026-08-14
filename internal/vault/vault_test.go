@@ -65,3 +65,16 @@ func TestFakeSourceEmptyHostIsIdempotent(t *testing.T) {
 		t.Errorf("got %d items, want 0", len(items))
 	}
 }
+
+// TestFakeSourceDecryptLogin: the fake returns the item's encrypted username
+// and password as plaintext bytes (mirrors DecryptPrivateKey's behavior).
+func TestFakeSourceDecryptLogin(t *testing.T) {
+	src := vault.NewFakeSource("vw:personal", nil)
+	user, pass, err := src.DecryptLogin(vault.Item{Kind: "login", EncUsername: "admin", EncPassword: "s3cret"})
+	if err != nil {
+		t.Fatalf("DecryptLogin: %v", err)
+	}
+	if string(user) != "admin" || string(pass) != "s3cret" {
+		t.Errorf("user=%q pass=%q, want admin/s3cret", user, pass)
+	}
+}
