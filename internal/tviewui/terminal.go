@@ -2,7 +2,6 @@ package tviewui
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"sync"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
+	"github.com/ac-kurniawan/wardenssh/internal/session"
 )
 
 // SessionKey uniquely identifies a host session across sources (Q11/C
@@ -126,7 +126,7 @@ func (p *TerminalPane) StartSSH(entry hosts.Entry, argv []string, env []string, 
 		return fmt.Errorf("terminal: empty argv")
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = session.MergeEnv(env)
 	return p.StartSSHFromCmd(entry, cmd, env, onExit)
 }
 

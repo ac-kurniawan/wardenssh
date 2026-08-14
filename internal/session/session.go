@@ -2,7 +2,6 @@ package session
 
 import (
 	"errors"
-	"os"
 	"sync"
 
 	pty "github.com/aymanbagabas/go-pty"
@@ -44,8 +43,8 @@ func StartWithEnv(id, alias, source string, argv []string, env []string) (*Sessi
 		return nil, err
 	}
 	c := p.Command(argv[0], argv[1:]...)
-	// Merge parent env with extra env (extra takes precedence on duplicates).
-	c.Env = append(os.Environ(), env...)
+	// Merge parent env with extra env (extra wins deterministically, Q-dedup).
+	c.Env = MergeEnv(env)
 	if err := c.Start(); err != nil {
 		_ = p.Close()
 		return nil, err
