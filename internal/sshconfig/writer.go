@@ -23,9 +23,9 @@ type HostConfig struct {
 	IdentityFile string
 }
 
-// GenerateKeyToFile generates an SSH keypair (ed25519 or rsa 4096) and writes
-// the private key to keyPath (0600) and public key to keyPath + ".pub" (0644).
-func GenerateKeyToFile(algo string, keyPath string) error {
+// GenerateKeyPair generates an SSH keypair (ed25519 or rsa 4096) in RAM, returning
+// the private key PEM string and authorized public key string.
+func GenerateKeyPair(algo string) (string, string, error) {
 	var pubKey ssh.PublicKey
 	var pemBlock *pem.Block
 
@@ -33,29 +33,42 @@ func GenerateKeyToFile(algo string, keyPath string) error {
 	case "rsa", "rsa4096":
 		rsaKey, err := rsa.GenerateKey(rand.Reader, 4096)
 		if err != nil {
-			return fmt.Errorf("generate rsa key: %w", err)
+			return "", "", fmt.Errorf("generate rsa key: %w", err)
 		}
 		pubKey, err = ssh.NewPublicKey(&rsaKey.PublicKey)
 		if err != nil {
-			return fmt.Errorf("ssh public key from rsa: %w", err)
+			return "", "", fmt.Errorf("ssh public key from rsa: %w", err)
 		}
 		pemBlock, err = ssh.MarshalPrivateKey(rsaKey, "")
 		if err != nil {
-			return fmt.Errorf("marshal rsa private key: %w", err)
+			return "", "", fmt.Errorf("marshal rsa private key: %w", err)
 		}
 	default: // "ed25519"
 		pub, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
-			return fmt.Errorf("generate ed25519 key: %w", err)
+			return "", "", fmt.Errorf("generate ed25519 key: %w", err)
 		}
 		pubKey, err = ssh.NewPublicKey(pub)
 		if err != nil {
-			return fmt.Errorf("ssh public key from ed25519: %w", err)
+			return "", "", fmt.Errorf("ssh public key from ed25519: %w", err)
 		}
 		pemBlock, err = ssh.MarshalPrivateKey(priv, "")
 		if err != nil {
-			return fmt.Errorf("marshal ed25519 private key: %w", err)
+			return "", "", fmt.Errorf("marshal ed25519 private key: %w", err)
 		}
+	}
+
+	privBytes := pem.EncodeToMemory(pemBlock)
+	pubBytes := ssh.MarshalAuthorizedKey(pubKey)
+	return string(privBytes), string(pubBytes), nil
+}
+
+// GenerateKeyToFile generates an SSH keypair (ed25519 or rsa 4096) and writes
+// the private key to keyPath (0600) and public key to keyPath + ".pub" (0644).
+func GenerateKeyToFile(algo string, keyPath string) error {
+	privPEM, pubAuth, err := GenerateKeyPair(algo)
+	if err != nil {
+		return err
 	}
 
 	if dir := filepath.Dir(keyPath); dir != "" && dir != "." {
@@ -64,13 +77,11 @@ func GenerateKeyToFile(algo string, keyPath string) error {
 		}
 	}
 
-	privBytes := pem.EncodeToMemory(pemBlock)
-	if err := os.WriteFile(keyPath, privBytes, 0600); err != nil {
+	if err := os.WriteFile(keyPath, []byte(privPEM), 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
 
-	pubBytes := ssh.MarshalAuthorizedKey(pubKey)
-	if err := os.WriteFile(keyPath+".pub", pubBytes, 0644); err != nil {
+	if err := os.WriteFile(keyPath+".pub", []byte(pubAuth), 0644); err != nil {
 		return fmt.Errorf("write public key: %w", err)
 	}
 

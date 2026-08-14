@@ -3,6 +3,8 @@ package tviewui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/session"
 	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
+	"github.com/ac-kurniawan/wardenssh/internal/sshconfig"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
@@ -36,26 +39,29 @@ type App struct {
 	deps     Deps
 	vaults   []config.Vault
 
-	hostPane   *HostListPane
-	termPane   *TerminalPane
-	setupModal *SetupModal
-	quitModal  *QuitModal
-	discModal  *DisconnectModal
-	footer     *Footer
+	hostPane    *HostListPane
+	termPane    *TerminalPane
+	setupModal  *SetupModal
+	quitModal   *QuitModal
+	discModal   *DisconnectModal
+	createModal *CreateModal
+	footer      *Footer
 
 	root    *tview.Flex
 	left    *tview.Flex
 	right   *tview.Flex
 	overlay *tview.Pages
 
-	mu          sync.Mutex
-	inSetup     bool
-	inQuit      bool
-	inDisconnect bool
-	termFocused bool // focus is on the terminal pane (vs. the host list)
-	syncStarted bool
-	syncTicker  *time.Ticker
-	stopSync    chan struct{}
+	mu            sync.Mutex
+	inSetup       bool
+	inQuit        bool
+	inDisconnect  bool
+	inCreate      bool
+	sshConfigPath string
+	termFocused   bool // focus is on the terminal pane (vs. the host list)
+	syncStarted   bool
+	syncTicker    *time.Ticker
+	stopSync      chan struct{}
 }
 
 // New creates the TUI app. If vaults is non-empty, it starts in setup mode.
@@ -76,6 +82,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	a.hostPane.SetOnConnect(a.handleConnect)
 	a.hostPane.SetOnScopeChange(func() {})
 	a.hostPane.SetOnRefresh(func() { _ = a.TriggerSync() })
+	a.hostPane.SetOnCreate(a.showCreateModal)
 
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -342,6 +349,347 @@ func (a *App) HandleConnectForTest(entry hosts.Entry) {
 // InDisconnect reports whether the disconnect confirmation modal is open.
 func (a *App) InDisconnect() bool { return a.inDisconnect }
 
+// InCreateModal reports whether the connection creation modal is active.
+func (a *App) InCreateModal() bool { return a.inCreate }
+
+// CreateModal returns the current CreateModal instance.
+func (a *App) CreateModal() *CreateModal { return a.createModal }
+
+// ShowCreateModal opens the connection creation modal.
+func (a *App) ShowCreateModal() { a.showCreateModal() }
+
+// CloseCreateModal closes the connection creation modal and returns focus to the host list.
+func (a *App) CloseCreateModal() {
+	a.inCreate = false
+	a.overlay.RemovePage("create")
+	a.hostPane.Refresh()
+	a.app.SetFocus(a.hostPane.Primitive())
+}
+
+// SetSSHConfigPathForTest overrides the ssh config path used when writing host entries (tests only).
+func (a *App) SetSSHConfigPathForTest(path string) {
+	a.sshConfigPath = path
+}
+
+func (a *App) showCreateModal() {
+	if a.inCreate {
+		return
+	}
+	targets := a.availableTargets()
+	a.createModal = NewCreateModal(targets)
+	a.createModal.SetOnSubmit(func(params CreateParams) error {
+		if err := a.HandleCreateConnection(params); err != nil {
+			return err
+		}
+		a.CloseCreateModal()
+		return nil
+	})
+	a.createModal.SetOnCancel(a.CloseCreateModal)
+	a.inCreate = true
+	a.overlay.AddPage("create", a.createModal.Primitive(), true, true)
+	a.app.SetFocus(a.createModal.Primitive())
+}
+
+func (a *App) availableTargets() []string {
+	targets := []string{"~/.ssh/config"}
+	seen := make(map[string]bool)
+	seen["~/.ssh/config"] = true
+
+	if a.deps.VaultCli != nil {
+		for _, src := range a.deps.VaultCli.Sources() {
+			name := src.Name()
+			if !strings.HasPrefix(name, "vw:") {
+				name = "vw:" + name
+			}
+			if !seen[name] {
+				seen[name] = true
+				targets = append(targets, name)
+			}
+		}
+	}
+	for _, v := range a.vaults {
+		name := v.Name
+		if !strings.HasPrefix(name, "vw:") {
+			name = "vw:" + name
+		}
+		if !seen[name] {
+			seen[name] = true
+			targets = append(targets, name)
+		}
+	}
+	return targets
+}
+
+// HandleCreateConnection creates a new SSH connection either in ~/.ssh/config or in a Vault.
+func (a *App) HandleCreateConnection(params CreateParams) error {
+	params.Target = strings.TrimSpace(params.Target)
+	if params.Target == "" || params.Target == "~/.ssh/config" || params.Target == "file" {
+		return a.handleCreateFileConnection(params)
+	}
+	return a.handleCreateVaultConnection(params)
+}
+
+func (a *App) handleCreateFileConnection(params CreateParams) error {
+	identityPath := ""
+	authKind := params.AuthKind
+	if authKind == "" {
+		authKind = "key"
+	}
+
+	if authKind == "key" {
+		algo := params.KeyAlgo
+		if algo == "" {
+			algo = "ed25519"
+		}
+		var sshDir string
+		if a.sshConfigPath != "" {
+			sshDir = filepath.Dir(a.sshConfigPath)
+		} else {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("resolve home dir: %w", err)
+			}
+			sshDir = filepath.Join(home, ".ssh")
+		}
+		identityPath = filepath.Join(sshDir, fmt.Sprintf("id_%s_%s", algo, params.Alias))
+		if err := sshconfig.GenerateKeyToFile(algo, identityPath); err != nil {
+			return fmt.Errorf("generate key: %w", err)
+		}
+	}
+
+	configPath := a.sshConfigPath
+	if configPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home dir: %w", err)
+		}
+		configPath = filepath.Join(home, ".ssh", "config")
+	}
+
+	cfg := sshconfig.HostConfig{
+		Alias:        params.Alias,
+		HostName:     params.HostName,
+		User:         params.User,
+		Port:         params.Port,
+		ProxyJump:    params.ProxyJump,
+		IdentityFile: identityPath,
+	}
+
+	if err := sshconfig.AppendHostEntry(configPath, cfg); err != nil {
+		return fmt.Errorf("append config entry: %w", err)
+	}
+
+	newEntry := hosts.Entry{
+		Alias:        params.Alias,
+		HostName:     params.HostName,
+		User:         params.User,
+		Port:         params.Port,
+		ProxyJump:    params.ProxyJump,
+		Source:       "file",
+		IdentityFile: identityPath,
+		AuthKind:     authKind,
+	}
+	a.hostList.Merge([]hosts.Entry{newEntry})
+	a.hostPane.Refresh()
+	return nil
+}
+
+func (a *App) handleCreateVaultConnection(params CreateParams) error {
+	vaultName := strings.TrimPrefix(params.Target, "vw:")
+	var sess *vaultclient.Session
+	var cf config.CustomFields
+	var targetSource *vaultadapter.Source
+	var serverURL string
+
+	if a.deps.VaultCli != nil {
+		if vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client); ok {
+			targetSource = vAdapterClient.SourceByName(vaultName)
+			if targetSource != nil {
+				sess = targetSource.Session()
+				cf = targetSource.Fields()
+			}
+		}
+	}
+
+	// Fallback custom fields from deps if not retrieved from source
+	if cf.Host == "" {
+		cf = a.deps.CustomFields
+	}
+	if cf.Host == "" {
+		cf.Host = "host"
+	}
+	if cf.User == "" {
+		cf.User = "user"
+	}
+	if cf.Port == "" {
+		cf.Port = "port"
+	}
+	if cf.ProxyJump == "" {
+		cf.ProxyJump = "proxyjump"
+	}
+	if cf.Type == "" {
+		cf.Type = "type"
+	}
+
+	// Find server URL from configured vaults
+	for _, v := range a.vaults {
+		if v.Name == vaultName || "vw:"+v.Name == params.Target {
+			serverURL = v.Server
+			break
+		}
+	}
+	if serverURL == "" && len(a.vaults) > 0 {
+		serverURL = a.vaults[0].Server
+	}
+
+	if sess == nil {
+		return fmt.Errorf("vault %q is not unlocked or unavailable", params.Target)
+	}
+
+	vc := vaultclientNew(serverURL)
+
+	encName, err := sess.EncryptField(params.Alias)
+	if err != nil {
+		return fmt.Errorf("encrypt name: %w", err)
+	}
+
+	// Build custom fields
+	var customFields []vaultclient.CustomField
+	fHost, err := encryptCustomField(sess, cf.Host, params.HostName)
+	if err != nil {
+		return fmt.Errorf("encrypt host field: %w", err)
+	}
+	customFields = append(customFields, fHost)
+
+	fType, err := encryptCustomField(sess, cf.Type, "SSH")
+	if err != nil {
+		return fmt.Errorf("encrypt type field: %w", err)
+	}
+	customFields = append(customFields, fType)
+
+	if params.User != "" {
+		fUser, err := encryptCustomField(sess, cf.User, params.User)
+		if err != nil {
+			return fmt.Errorf("encrypt user field: %w", err)
+		}
+		customFields = append(customFields, fUser)
+	}
+	if params.Port != "" {
+		fPort, err := encryptCustomField(sess, cf.Port, params.Port)
+		if err != nil {
+			return fmt.Errorf("encrypt port field: %w", err)
+		}
+		customFields = append(customFields, fPort)
+	}
+	if params.ProxyJump != "" {
+		fPJ, err := encryptCustomField(sess, cf.ProxyJump, params.ProxyJump)
+		if err != nil {
+			return fmt.Errorf("encrypt proxyjump field: %w", err)
+		}
+		customFields = append(customFields, fPJ)
+	}
+
+	authKind := params.AuthKind
+	if authKind == "" {
+		authKind = "key"
+	}
+
+	var cipherItem vaultclient.Cipher
+	if authKind == "password" {
+		encUser, err := sess.EncryptField(params.User)
+		if err != nil {
+			return fmt.Errorf("encrypt username: %w", err)
+		}
+		encPass, err := sess.EncryptField(params.Password)
+		if err != nil {
+			return fmt.Errorf("encrypt password: %w", err)
+		}
+		cipherItem = vaultclient.Cipher{
+			Name: encName,
+			Type: 1,
+			Login: &vaultclient.Login{
+				Username: encUser,
+				Password: encPass,
+			},
+			Fields: customFields,
+		}
+	} else {
+		algo := params.KeyAlgo
+		if algo == "" {
+			algo = "ed25519"
+		}
+		privPEM, pubAuth, err := sshconfig.GenerateKeyPair(algo)
+		if err != nil {
+			return fmt.Errorf("generate keypair: %w", err)
+		}
+		encPriv, err := sess.EncryptField(privPEM)
+		if err != nil {
+			return fmt.Errorf("encrypt private key: %w", err)
+		}
+		encPub, err := sess.EncryptField(pubAuth)
+		if err != nil {
+			return fmt.Errorf("encrypt public key: %w", err)
+		}
+		cipherItem = vaultclient.Cipher{
+			Name: encName,
+			Type: 5,
+			SshKey: &struct {
+				PrivateKey     string `json:"privateKey"`
+				PublicKey      string `json:"publicKey"`
+				KeyFingerprint string `json:"keyFingerprint"`
+				Passphrase     string `json:"passphrase"`
+			}{
+				PrivateKey: encPriv,
+				PublicKey:  encPub,
+			},
+			Fields: customFields,
+		}
+	}
+
+	created, err := vc.CreateCipher(sess, cipherItem)
+	if err != nil {
+		return fmt.Errorf("create cipher: %w", err)
+	}
+
+	if targetSource != nil && created != nil {
+		targetSource.AddCipher(*created)
+	}
+
+	sourceLabel := params.Target
+	if !strings.HasPrefix(sourceLabel, "vw:") && sourceLabel != "file" && sourceLabel != "~/.ssh/config" {
+		sourceLabel = "vw:" + sourceLabel
+	}
+
+	newEntry := hosts.Entry{
+		Alias:     params.Alias,
+		HostName:  params.HostName,
+		User:      params.User,
+		Port:      params.Port,
+		ProxyJump: params.ProxyJump,
+		Source:    sourceLabel,
+		AuthKind:  authKind,
+	}
+	a.hostList.Merge([]hosts.Entry{newEntry})
+	a.hostPane.Refresh()
+	return nil
+}
+
+func encryptCustomField(sess *vaultclient.Session, name, val string) (vaultclient.CustomField, error) {
+	encName, err := sess.EncryptField(name)
+	if err != nil {
+		return vaultclient.CustomField{}, err
+	}
+	encVal, err := sess.EncryptField(val)
+	if err != nil {
+		return vaultclient.CustomField{}, err
+	}
+	return vaultclient.CustomField{
+		Name:  encName,
+		Value: encVal,
+		Type:  0,
+	}, nil
+}
+
 // ConfirmDisconnect confirms the disconnect modal (tests / modal 'y').
 func (a *App) ConfirmDisconnect() {
 	if !a.inDisconnect || a.discModal == nil {
@@ -522,10 +870,10 @@ func (a *App) showHostListPane() {
 //     quit confirmation modal (Q31/C). Escape with a non-empty filter clears
 //     the filter instead. Ctrl+B moves focus to the terminal when a session
 //     is running.
-//   - Setup / quit / disconnect modal: passed through so those modals handle
+//   - Setup / quit / disconnect / create modal: passed through so those modals handle
 //     their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
-	if a.inSetup || a.inQuit || a.inDisconnect {
+	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate {
 		return event
 	}
 

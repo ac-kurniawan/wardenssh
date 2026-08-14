@@ -157,3 +157,16 @@ func TestFilterInputCaptureNavigatesAndConnects(t *testing.T) {
 		t.Errorf("expected connect callback for web-02 on Enter, got %s", connected.Alias)
 	}
 }
+
+func TestHostListPaneCreateCallback(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	created := false
+	pane.SetOnCreate(func() {
+		created = true
+	})
+	pane.TriggerCreate()
+	if !created {
+		t.Fatal("expected OnCreate callback after TriggerCreate")
+	}
+}
+

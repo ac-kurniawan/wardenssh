@@ -319,3 +319,10 @@ func (c *Client) fetchCiphers(s *Session) ([]Cipher, error) {
 func (s *Session) DecryptField(enc string) ([]byte, error) {
 	return vaultcrypto.Decrypt(s.SymEnc, s.SymMac, enc)
 }
+
+// EncryptField encrypts a plaintext string into a BitWarden type-2 encrypted
+// string under the session's symmetric key. Convenience wrapper around vaultcrypto.Encrypt.
+func (s *Session) EncryptField(plain string) (string, error) {
+	return vaultcrypto.Encrypt(s.SymEnc, s.SymMac, []byte(plain))
+}
+

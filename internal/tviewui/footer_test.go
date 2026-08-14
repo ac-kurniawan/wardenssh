@@ -10,7 +10,7 @@ import (
 func TestFooterHostModeHints(t *testing.T) {
 	f := tviewui.NewFooter()
 	text := f.Text()
-	for _, want := range []string{"Tab", "Ctrl+R", "Enter", "quit"} {
+	for _, want := range []string{"Tab", "n new", "Ctrl+R", "Enter", "quit"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("host-mode footer %q missing %q", text, want)
 		}

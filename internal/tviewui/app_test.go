@@ -1,10 +1,13 @@
 package tviewui_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
 )
 
 func TestAppNewWithoutVaults(t *testing.T) {
@@ -244,6 +248,420 @@ func TestAppSetupOnCompleteFromGoroutine(t *testing.T) {
 		t.Fatal("expected non-nil app")
 	}
 }
+
+func setupTestAppWithConfigPath(configPath string) *tviewui.App {
+	hl := hosts.NewList(nil)
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.SetSSHConfigPathForTest(configPath)
+	return app
+}
+
+func TestApp_CreateConnection_FileTarget_KeyAuth(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	app := setupTestAppWithConfigPath(configPath)
+
+	params := tviewui.CreateParams{
+		Alias:    "new-server",
+		Target:   "~/.ssh/config",
+		HostName: "10.0.0.5",
+		User:     "root",
+		Port:     "22",
+		AuthKind: "key",
+		KeyAlgo:  "ed25519",
+	}
+
+	err := app.HandleCreateConnection(params)
+	if err != nil {
+		t.Fatalf("HandleCreateConnection failed: %v", err)
+	}
+
+	// Verify host list updated
+	entries := app.HostList().All()
+	var found *hosts.Entry
+	for _, e := range entries {
+		if e.Alias == "new-server" && e.HostName == "10.0.0.5" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("new-server host not found in host list after creation: %+v", entries)
+	}
+	if found.Source != "file" {
+		t.Errorf("Source = %q, want 'file'", found.Source)
+	}
+	if found.AuthKind != "key" {
+		t.Errorf("AuthKind = %q, want 'key'", found.AuthKind)
+	}
+	if found.IdentityFile == "" {
+		t.Errorf("IdentityFile should be set for key auth")
+	}
+
+	// Verify key file was generated
+	if _, err := os.Stat(found.IdentityFile); err != nil {
+		t.Errorf("expected identity file at %s: %v", found.IdentityFile, err)
+	}
+	if _, err := os.Stat(found.IdentityFile + ".pub"); err != nil {
+		t.Errorf("expected public key file at %s.pub: %v", found.IdentityFile, err)
+	}
+
+	// Verify ssh config content
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	cfgStr := string(data)
+	if !strings.Contains(cfgStr, "Host new-server") || !strings.Contains(cfgStr, "HostName 10.0.0.5") {
+		t.Errorf("unexpected config file content:\n%s", cfgStr)
+	}
+}
+
+func TestApp_CreateConnection_FileTarget_PasswordAuth(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	app := setupTestAppWithConfigPath(configPath)
+
+	params := tviewui.CreateParams{
+		Alias:    "db-node",
+		Target:   "file",
+		HostName: "192.168.1.50",
+		User:     "postgres",
+		Port:     "5432",
+		AuthKind: "password",
+		Password: "secretpassword",
+	}
+
+	err := app.HandleCreateConnection(params)
+	if err != nil {
+		t.Fatalf("HandleCreateConnection failed: %v", err)
+	}
+
+	entries := app.HostList().All()
+	var found *hosts.Entry
+	for _, e := range entries {
+		if e.Alias == "db-node" && e.HostName == "192.168.1.50" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("db-node host not found in host list after creation: %+v", entries)
+	}
+	if found.AuthKind != "password" {
+		t.Errorf("AuthKind = %q, want 'password'", found.AuthKind)
+	}
+	if found.IdentityFile != "" {
+		t.Errorf("IdentityFile should be empty for password auth, got %q", found.IdentityFile)
+	}
+
+	// Verify config file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	cfgStr := string(data)
+	if !strings.Contains(cfgStr, "Host db-node") || !strings.Contains(cfgStr, "Port 5432") {
+		t.Errorf("unexpected config file content:\n%s", cfgStr)
+	}
+}
+
+func TestApp_CreateConnection_VaultTarget_PasswordAuth(t *testing.T) {
+	symKey := bytes.Repeat([]byte{0x01}, 64)
+	sess := &vaultclient.Session{
+		AccessToken: "test-token",
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+	}
+
+	var postedCipher vaultclient.Cipher
+	var authHeader string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+			return
+		}
+		authHeader = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&postedCipher); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		postedCipher.ID = "cipher-123"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(postedCipher)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cf := config.CustomFields{
+		Host:      "host",
+		User:      "user",
+		Port:      "port",
+		ProxyJump: "proxyjump",
+		Type:      "type",
+	}
+	src := vaultadapter.NewSource("vw:personal", sess, nil, cf)
+	vc := vaultadapter.NewClient(src)
+
+	vaults := []config.Vault{
+		{Name: "personal", Server: srv.URL, Email: "user@example.com"},
+	}
+	hl := hosts.NewList(nil)
+	app := tviewui.New(hl, tviewui.Deps{
+		VaultCli:     vc,
+		CustomFields: cf,
+	}, vaults)
+
+	params := tviewui.CreateParams{
+		Alias:     "vw-pass-server",
+		Target:    "vw:personal",
+		HostName:  "10.0.0.10",
+		User:      "admin",
+		Port:      "2222",
+		ProxyJump: "bastion",
+		AuthKind:  "password",
+		Password:  "mypassword123",
+	}
+
+	err := app.HandleCreateConnection(params)
+	if err != nil {
+		t.Fatalf("HandleCreateConnection failed: %v", err)
+	}
+
+	if authHeader != "Bearer test-token" {
+		t.Errorf("Authorization header = %q, want 'Bearer test-token'", authHeader)
+	}
+	if postedCipher.Type != 1 {
+		t.Errorf("posted cipher Type = %d, want 1 (Login)", postedCipher.Type)
+	}
+
+	// Verify decrypted name
+	nameBytes, err := sess.DecryptField(postedCipher.Name)
+	if err != nil || string(nameBytes) != "vw-pass-server" {
+		t.Errorf("decrypted cipher name = %q, err=%v", string(nameBytes), err)
+	}
+
+	// Verify login fields
+	if postedCipher.Login == nil {
+		t.Fatalf("expected posted cipher Login to be non-nil")
+	}
+	userBytes, err := sess.DecryptField(postedCipher.Login.Username)
+	if err != nil || string(userBytes) != "admin" {
+		t.Errorf("decrypted username = %q, err=%v", string(userBytes), err)
+	}
+	passBytes, err := sess.DecryptField(postedCipher.Login.Password)
+	if err != nil || string(passBytes) != "mypassword123" {
+		t.Errorf("decrypted password = %q, err=%v", string(passBytes), err)
+	}
+
+	// Verify custom fields
+	customMap := make(map[string]string)
+	for _, f := range postedCipher.Fields {
+		k, _ := sess.DecryptField(f.Name)
+		v, _ := sess.DecryptField(f.Value)
+		customMap[string(k)] = string(v)
+	}
+	if customMap["host"] != "10.0.0.10" {
+		t.Errorf("custom field 'host' = %q, want '10.0.0.10'", customMap["host"])
+	}
+	if !strings.EqualFold(customMap["type"], "SSH") {
+		t.Errorf("custom field 'type' = %q, want 'SSH'", customMap["type"])
+	}
+	if customMap["port"] != "2222" {
+		t.Errorf("custom field 'port' = %q, want '2222'", customMap["port"])
+	}
+	if customMap["proxyjump"] != "bastion" {
+		t.Errorf("custom field 'proxyjump' = %q, want 'bastion'", customMap["proxyjump"])
+	}
+
+	// Verify host list updated
+	entries := app.HostList().All()
+	var found *hosts.Entry
+	for _, e := range entries {
+		if e.Alias == "vw-pass-server" && e.HostName == "10.0.0.10" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("vw-pass-server host not found in host list: %+v", entries)
+	}
+	if found.Source != "vw:personal" {
+		t.Errorf("Source = %q, want 'vw:personal'", found.Source)
+	}
+	if found.AuthKind != "password" {
+		t.Errorf("AuthKind = %q, want 'password'", found.AuthKind)
+	}
+}
+
+func TestApp_CreateConnection_VaultTarget_KeyAuth(t *testing.T) {
+	symKey := bytes.Repeat([]byte{0x02}, 64)
+	sess := &vaultclient.Session{
+		AccessToken: "key-token",
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+	}
+
+	var postedCipher vaultclient.Cipher
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&postedCipher); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		postedCipher.ID = "cipher-key-456"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(postedCipher)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cf := config.CustomFields{
+		Host:      "host",
+		User:      "user",
+		Port:      "port",
+		ProxyJump: "proxyjump",
+		Type:      "type",
+	}
+	src := vaultadapter.NewSource("vw:work", sess, nil, cf)
+	vc := vaultadapter.NewClient(src)
+
+	vaults := []config.Vault{
+		{Name: "work", Server: srv.URL, Email: "work@example.com"},
+	}
+	hl := hosts.NewList(nil)
+	app := tviewui.New(hl, tviewui.Deps{
+		VaultCli:     vc,
+		CustomFields: cf,
+	}, vaults)
+
+	params := tviewui.CreateParams{
+		Alias:    "vw-key-server",
+		Target:   "vw:work",
+		HostName: "10.1.1.1",
+		User:     "deploy",
+		Port:     "22",
+		AuthKind: "key",
+		KeyAlgo:  "ed25519",
+	}
+
+	err := app.HandleCreateConnection(params)
+	if err != nil {
+		t.Fatalf("HandleCreateConnection failed: %v", err)
+	}
+
+	if postedCipher.Type != 5 {
+		t.Errorf("posted cipher Type = %d, want 5 (SSH-Key)", postedCipher.Type)
+	}
+	if postedCipher.SshKey == nil {
+		t.Fatalf("expected posted cipher SshKey to be non-nil")
+	}
+
+	privKeyBytes, err := sess.DecryptField(postedCipher.SshKey.PrivateKey)
+	if err != nil || !strings.Contains(string(privKeyBytes), "OPENSSH PRIVATE KEY") {
+		t.Errorf("decrypted private key invalid: %s, err=%v", string(privKeyBytes), err)
+	}
+	pubKeyBytes, err := sess.DecryptField(postedCipher.SshKey.PublicKey)
+	if err != nil || !strings.HasPrefix(string(pubKeyBytes), "ssh-ed25519 ") {
+		t.Errorf("decrypted public key invalid: %s, err=%v", string(pubKeyBytes), err)
+	}
+
+	// Verify custom fields
+	customMap := make(map[string]string)
+	for _, f := range postedCipher.Fields {
+		k, _ := sess.DecryptField(f.Name)
+		v, _ := sess.DecryptField(f.Value)
+		customMap[string(k)] = string(v)
+	}
+	if customMap["host"] != "10.1.1.1" {
+		t.Errorf("custom field 'host' = %q, want '10.1.1.1'", customMap["host"])
+	}
+	if !strings.EqualFold(customMap["type"], "SSH") {
+		t.Errorf("custom field 'type' = %q, want 'SSH'", customMap["type"])
+	}
+
+	// Verify host list updated
+	entries := app.HostList().All()
+	var found *hosts.Entry
+	for _, e := range entries {
+		if e.Alias == "vw-key-server" && e.HostName == "10.1.1.1" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("vw-key-server host not found in host list: %+v", entries)
+	}
+	if found.Source != "vw:work" {
+		t.Errorf("Source = %q, want 'vw:work'", found.Source)
+	}
+	if found.AuthKind != "key" {
+		t.Errorf("AuthKind = %q, want 'key'", found.AuthKind)
+	}
+}
+
+func TestApp_CreateModal_KeyShortcuts_N_and_A(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	app := setupTestAppWithConfigPath(configPath)
+
+	if app.InCreateModal() {
+		t.Fatal("expected not in create modal initially")
+	}
+
+	// Press 'n' to open modal
+	app.HostPane().TriggerCreate()
+	if !app.InCreateModal() {
+		t.Fatal("expected to be in create modal after TriggerCreate")
+	}
+
+	modal := app.CreateModal()
+	if modal == nil {
+		t.Fatal("expected active CreateModal instance")
+	}
+
+	// Cancel modal
+	modal.TriggerCancel()
+	if app.InCreateModal() {
+		t.Fatal("expected create modal closed after cancel")
+	}
+
+	// Open again and submit
+	app.HostPane().TriggerCreate()
+	if !app.InCreateModal() {
+		t.Fatal("expected to be in create modal after second TriggerCreate")
+	}
+
+	modal = app.CreateModal()
+	modal.SetAlias("shortcut-node")
+	modal.SetHostName("10.0.0.99")
+	modal.SetAuthKind("password")
+	modal.SetPassword("pwd")
+	modal.Submit()
+
+	if app.InCreateModal() {
+		t.Fatal("expected create modal closed after successful submit")
+	}
+
+	// Verify created entry
+	entries := app.HostList().All()
+	found := false
+	for _, e := range entries {
+		if e.Alias == "shortcut-node" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("shortcut-node not found in host list")
+	}
+}
+
 
 
 

@@ -21,6 +21,7 @@ type HostListPane struct {
 	onConnect  func(hosts.Entry)
 	onScope    func()
 	onRefresh  func()
+	onCreate   func()
 	syncStatus string
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
 }
@@ -73,6 +74,10 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		}
 		if event.Rune() == 'r' {
 			p.TriggerRefresh()
+			return nil
+		}
+		if event.Rune() == 'n' || event.Rune() == 'a' {
+			p.TriggerCreate()
 			return nil
 		}
 		return event
@@ -148,6 +153,18 @@ func (p *HostListPane) SetOnRefresh(fn func()) {
 func (p *HostListPane) TriggerRefresh() {
 	if p.onRefresh != nil {
 		p.onRefresh()
+	}
+}
+
+// SetOnCreate sets the callback for creating a new connection ('n' / 'a' key).
+func (p *HostListPane) SetOnCreate(fn func()) {
+	p.onCreate = fn
+}
+
+// TriggerCreate fires the create callback (used in tests and shortcuts).
+func (p *HostListPane) TriggerCreate() {
+	if p.onCreate != nil {
+		p.onCreate()
 	}
 }
 

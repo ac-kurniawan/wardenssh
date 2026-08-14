@@ -205,6 +205,30 @@ func (c *Client) SyncAll(vc *vaultclient.Client) error {
 	return nil
 }
 
+// SourceByName returns the Source with the given name (matching either "vw:<name>" or "<name>").
+func (c *Client) SourceByName(name string) *Source {
+	for _, src := range c.sources {
+		if s, ok := src.(*Source); ok {
+			if s.Name() == name || s.Name() == "vw:"+name || strings.TrimPrefix(s.Name(), "vw:") == strings.TrimPrefix(name, "vw:") {
+				return s
+			}
+		}
+	}
+	return nil
+}
+
+// Session returns the underlying vaultclient.Session.
+func (s *Source) Session() *vaultclient.Session { return s.session }
+
+// Fields returns the configured custom-field mappings.
+func (s *Source) Fields() config.CustomFields { return s.fields }
+
+// AddCipher appends a newly created cipher to the source's cached ciphers.
+func (s *Source) AddCipher(c vaultclient.Cipher) {
+	s.ciphers = append(s.ciphers, c)
+}
+
 // Compile-time check: Source satisfies vault.Source and Client satisfies vault.Client.
 var _ vault.Source = (*Source)(nil)
 var _ vault.Client = (*Client)(nil)
+

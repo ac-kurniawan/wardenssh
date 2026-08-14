@@ -30,7 +30,7 @@ func (f *Footer) SetMode(mode string) {
 	case "terminal":
 		f.view.SetText("[gray:black]Ctrl+B list · Ctrl+C SIGINT · Esc list[-]")
 	default:
-		f.view.SetText("[gray:black]Tab scope · Ctrl+R sync · Enter connect · Esc/q quit[-]")
+		f.view.SetText("[gray:black]Tab scope · n new · Ctrl+R sync · Enter connect · Esc/q quit[-]")
 	}
 }
 
