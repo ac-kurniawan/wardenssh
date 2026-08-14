@@ -66,6 +66,8 @@ type App struct {
 
 // New creates the TUI app. If vaults is non-empty, it starts in setup mode.
 func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
+	SetBlockCursor()
+
 	a := &App{
 		app:      tview.NewApplication(),
 		hostList: hostList,

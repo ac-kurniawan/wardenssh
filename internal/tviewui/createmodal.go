@@ -2,6 +2,7 @@ package tviewui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -34,8 +35,15 @@ type CreateModal struct {
 	mu       sync.Mutex
 }
 
+// SetBlockCursor sends ANSI escape sequence to set terminal hardware cursor to a steady block rectangle (█).
+func SetBlockCursor() {
+	_, _ = os.Stdout.WriteString("\x1b[2 q")
+}
+
 // NewCreateModal constructs the creation form modal.
 func NewCreateModal(targets []string) *CreateModal {
+	SetBlockCursor()
+
 	if len(targets) == 0 {
 		targets = []string{"~/.ssh/config"}
 	}
