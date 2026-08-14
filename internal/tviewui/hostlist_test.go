@@ -170,3 +170,16 @@ func TestHostListPaneCreateCallback(t *testing.T) {
 	}
 }
 
+func TestFilterInputCaptureCtrlNTriggersCreate(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	created := false
+	pane.SetOnCreate(func() {
+		created = true
+	})
+	pane.HandleFilterKey(tcell.NewEventKey(tcell.KeyCtrlN, 0, tcell.ModNone))
+	if !created {
+		t.Fatal("expected OnCreate callback when Ctrl+N pressed in filter")
+	}
+}
+
+

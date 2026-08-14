@@ -16,6 +16,7 @@ import (
 type HostListPane struct {
 	hostList   *hosts.List
 	filter     *tview.InputField
+	newBtn     *tview.Button
 	list       *tview.List
 	flex       *tview.Flex
 	onConnect  func(hosts.Entry)
@@ -31,6 +32,7 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 	p := &HostListPane{
 		hostList: hl,
 		filter:   tview.NewInputField(),
+		newBtn:   tview.NewButton("[+ New Connection]"),
 		list:     tview.NewList(),
 	}
 	p.filter.SetLabel("Filter: ").
@@ -42,6 +44,10 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 
 	p.filter.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		return p.handleFilterKey(event)
+	})
+
+	p.newBtn.SetSelectedFunc(func() {
+		p.TriggerCreate()
 	})
 
 	p.list.ShowSecondaryText(false).
@@ -64,6 +70,9 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		case tcell.KeyCtrlR:
 			p.TriggerRefresh()
 			return nil
+		case tcell.KeyCtrlN:
+			p.TriggerCreate()
+			return nil
 		case tcell.KeyEnter:
 			if p.onConnect != nil {
 				if e, ok := p.SelectedEntry(); ok {
@@ -76,21 +85,24 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 			p.TriggerRefresh()
 			return nil
 		}
-		if event.Rune() == 'n' || event.Rune() == 'a' {
-			p.TriggerCreate()
-			return nil
-		}
 		return event
 	})
 
+	topBar := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(p.filter, 0, 1, true).
+		AddItem(p.newBtn, 18, 0, false)
+
 	p.flex = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(p.filter, 1, 0, true).
+		AddItem(topBar, 1, 0, true).
 		AddItem(p.list, 0, 1, false)
 	return p
 }
 
 func (p *HostListPane) handleFilterKey(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
+	case tcell.KeyCtrlN:
+		p.TriggerCreate()
+		return nil
 	case tcell.KeyDown:
 		cur := p.list.GetCurrentItem()
 		if cur < p.list.GetItemCount()-1 {
