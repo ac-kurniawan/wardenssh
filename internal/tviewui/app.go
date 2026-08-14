@@ -41,6 +41,7 @@ type App struct {
 	setupModal *SetupModal
 	quitModal  *QuitModal
 	discModal  *DisconnectModal
+	footer     *Footer
 
 	root    *tview.Flex
 	left    *tview.Flex
@@ -91,6 +92,10 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(content, 0, 1, true)
 
+	// Footer hotkey hint (fixed one-line bar at the bottom).
+	a.footer = NewFooter()
+	a.root.AddItem(a.footer.Primitive(), 1, 0, false)
+
 	// Pages for modal overlays (setup, quit).
 	a.overlay = tview.NewPages().
 		AddPage("main", a.root, true, true)
@@ -136,10 +141,19 @@ func (a *App) HostPane() *HostListPane { return a.hostPane }
 // TerminalPane returns the terminal pane.
 func (a *App) TerminalPane() *TerminalPane { return a.termPane }
 
+// FooterText returns the current footer hotkey hint (used in tests).
+func (a *App) FooterText() string {
+	if a.footer == nil {
+		return ""
+	}
+	return a.footer.Text()
+}
+
 // FocusTerminal moves keyboard focus to the terminal pane (right side). The
 // session, if any, keeps running.
 func (a *App) FocusTerminal() {
 	a.termFocused = true
+	a.footer.SetMode("terminal")
 	a.app.SetFocus(a.termPane.Primitive())
 }
 
@@ -148,6 +162,7 @@ func (a *App) FocusTerminal() {
 // (Q18/iii yield-and-switch: "move left → kembali ke list (sesi tetap jalan)").
 func (a *App) FocusHostList() {
 	a.termFocused = false
+	a.footer.SetMode("host")
 	a.app.SetFocus(a.hostPane.Primitive())
 }
 
