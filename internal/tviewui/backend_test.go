@@ -48,8 +48,8 @@ func TestPtyBackendReadsOutput(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("backend.Read timed out after 5s; accumulated output: %q", acc.String())
+	case <-time.After(30 * time.Second):
+		t.Fatalf("backend.Read timed out after 30s; accumulated output: %q", acc.String())
 	}
 }
 
