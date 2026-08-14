@@ -21,6 +21,7 @@ type Entry struct {
 	Source       string // "file" or "vw:<vault-name>"
 	Live         bool   // green-dot: a session to this host is currently open
 	IdentityFile string // path to private key file (file-sourced entries only)
+	AuthKind     string // "key" (default) | "password" — how connect authenticates
 }
 
 // List is the merged, filterable, scope-cyclable host list.

@@ -13,6 +13,14 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 )
 
+// authKind maps a vault item kind to a hosts.Entry auth kind.
+func authKind(itemKind string) string {
+	if itemKind == "login" {
+		return "password"
+	}
+	return "key"
+}
+
 // BuildHostList merges the file source (sshConfig reader; nil = no ~/.ssh/config,
 // first-run) with the vault sources (nil client = no vaults yet), returning the
 // unified, no-dedup host list tagged with source labels.
@@ -54,6 +62,7 @@ func BuildHostList(sshConfig io.Reader, vc vault.Client) (*hosts.List, error) {
 					Port:      it.Port,
 					ProxyJump: it.ProxyJump,
 					Source:    src.Name(),
+					AuthKind:  authKind(it.Kind),
 				})
 			}
 		}
@@ -79,6 +88,7 @@ func VaultEntries(vc vault.Client) ([]hosts.Entry, error) {
 				Port:      it.Port,
 				ProxyJump: it.ProxyJump,
 				Source:    src.Name(),
+				AuthKind:  authKind(it.Kind),
 			})
 		}
 	}

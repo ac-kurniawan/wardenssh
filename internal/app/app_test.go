@@ -104,3 +104,28 @@ func TestBuildHostListInheritsFromWildcard(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildHostListPropagatesAuthKind: vault login items become "password"
+// hosts; SSH-Key items become "key" hosts.
+func TestBuildHostListPropagatesAuthKind(t *testing.T) {
+	vc := vault.NewFakeClient(
+		vault.NewFakeSource("vw:personal", []vault.Item{
+			{Name: "ci-box", HostName: "10.1.0.10", Kind: "sshkey"},
+			{Name: "prod-db", HostName: "10.0.0.9", Kind: "login"},
+		}),
+	)
+	l, err := app.BuildHostList(nil, vc)
+	if err != nil {
+		t.Fatalf("BuildHostList: %v", err)
+	}
+	got := map[string]string{}
+	for _, e := range l.All() {
+		got[e.Alias] = e.AuthKind
+	}
+	if got["ci-box"] != "key" {
+		t.Errorf("ci-box AuthKind = %q, want key", got["ci-box"])
+	}
+	if got["prod-db"] != "password" {
+		t.Errorf("prod-db AuthKind = %q, want password", got["prod-db"])
+	}
+}
