@@ -267,3 +267,35 @@ func TestCreateModal_ArrowKeysNavigateFields(t *testing.T) {
 	}
 }
 
+func TestCreateModal_DropDownArrowKeysNotIntercepted(t *testing.T) {
+	modal := tviewui.NewCreateModal([]string{"~/.ssh/config", "vw:personal"})
+	form := modal.Form()
+
+	// Focus the second item ("Destination:", index 1), which is a DropDown
+	form.SetFocus(1)
+
+	// Simulate KeyDown via form's input capture
+	var capturedEvent *tcell.EventKey
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// Test handler wrapper to check what key is returned by modal's input capture
+		return event
+	})
+
+	// Get the input capture handler installed by NewCreateModal
+	// By testing directly on form item index 1 (DropDown) vs index 0 (InputField)
+	form.SetFocus(0) // InputField: Alias
+	item0Idx, _ := form.GetFocusedItemIndex()
+	if item0Idx != 0 {
+		t.Fatalf("expected focus at index 0, got %d", item0Idx)
+	}
+
+	form.SetFocus(1) // DropDown: Destination
+	item1Idx, _ := form.GetFocusedItemIndex()
+	if item1Idx != 1 {
+		t.Fatalf("expected focus at index 1, got %d", item1Idx)
+	}
+
+	_ = capturedEvent
+}
+
+

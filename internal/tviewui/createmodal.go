@@ -115,10 +115,20 @@ func (m *CreateModal) buildForm() {
 		m.triggerCancel()
 	})
 	m.form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		switch event.Key() {
-		case tcell.KeyEscape:
+		if event.Key() == tcell.KeyEscape {
 			m.triggerCancel()
 			return nil
+		}
+
+		itemIdx, _ := m.form.GetFocusedItemIndex()
+		if itemIdx >= 0 && itemIdx < m.form.GetFormItemCount() {
+			item := m.form.GetFormItem(itemIdx)
+			if _, ok := item.(*tview.DropDown); ok {
+				return event
+			}
+		}
+
+		switch event.Key() {
 		case tcell.KeyDown:
 			return tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone)
 		case tcell.KeyUp:
