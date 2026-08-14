@@ -143,36 +143,57 @@ func (m *CreateModal) buildForm() {
 	m.UpdateFieldStyles()
 }
 
-// UpdateFieldStyles updates background colors of all form fields so the active
-// (focused) field is highlighted with a distinct background color (tcell.Color24)
-// while unfocused fields retain a subtle dark background (tcell.Color236).
+// UpdateFieldStyles updates background colors and label styles of all form fields
+// so the active (focused) field is prominently highlighted with a bold yellow label
+// and vibrant blue background (tcell.Color24), while unfocused fields remain subtle.
 func (m *CreateModal) UpdateFieldStyles() {
-	focusedIdx, _ := m.form.GetFocusedItemIndex()
+	focusedItemIdx, _ := m.form.GetFocusedItemIndex()
+
 	for i := 0; i < m.form.GetFormItemCount(); i++ {
 		item := m.form.GetFormItem(i)
-		isFocused := (i == focusedIdx)
+		isFocused := (i == focusedItemIdx)
 
 		bgColor := tcell.Color236
 		fgColor := tcell.Color255
+		labelColor := tcell.Color252
 		if isFocused {
 			bgColor = tcell.Color24
+			fgColor = tcell.Color255
+			labelColor = tcell.ColorYellow
+		}
+
+		fieldStyle := tcell.StyleDefault.Background(bgColor).Foreground(fgColor)
+		if isFocused {
+			fieldStyle = fieldStyle.Bold(true)
+		}
+		labelStyle := tcell.StyleDefault.Foreground(labelColor)
+		if isFocused {
+			labelStyle = labelStyle.Bold(true)
 		}
 
 		switch v := item.(type) {
 		case *tview.InputField:
+			v.SetFieldStyle(fieldStyle)
 			v.SetFieldBackgroundColor(bgColor)
 			v.SetFieldTextColor(fgColor)
+			v.SetLabelStyle(labelStyle)
+			v.SetLabelColor(labelColor)
 		case *tview.DropDown:
+			v.SetFieldStyle(fieldStyle)
 			v.SetFieldBackgroundColor(bgColor)
 			v.SetFieldTextColor(fgColor)
-			focusedStyle := tcell.StyleDefault.Background(bgColor).Foreground(fgColor)
-			v.SetFocusedStyle(focusedStyle)
+			v.SetLabelStyle(labelStyle)
+			v.SetLabelColor(labelColor)
+			v.SetFocusedStyle(fieldStyle)
 			v.SetListStyles(
 				tcell.StyleDefault.Background(tcell.Color236).Foreground(tcell.Color255),
-				tcell.StyleDefault.Background(tcell.Color24).Foreground(tcell.Color255),
+				tcell.StyleDefault.Background(tcell.Color24).Foreground(tcell.ColorYellow).Bold(true),
 			)
 		}
 	}
+
+	m.form.SetButtonActivatedStyle(tcell.StyleDefault.Background(tcell.Color24).Foreground(tcell.ColorYellow).Bold(true))
+	m.form.SetButtonStyle(tcell.StyleDefault.Background(tcell.Color236).Foreground(tcell.Color255))
 }
 
 func (m *CreateModal) updateTitle() {
