@@ -40,6 +40,7 @@ func TestCreateModal_DefaultTargetsFallback(t *testing.T) {
 
 	modal.SetAlias("test-server")
 	modal.SetHostName("10.0.0.1")
+	modal.SetUser("root")
 	modal.Submit()
 
 	if submittedParams.Target != "~/.ssh/config" {
@@ -147,6 +148,28 @@ func TestCreateModal_ValidationFailureEmptyHostName(t *testing.T) {
 	}
 }
 
+func TestCreateModal_ValidationFailureEmptyUser(t *testing.T) {
+	modal := tviewui.NewCreateModal([]string{"~/.ssh/config"})
+
+	submitted := false
+	modal.SetOnSubmit(func(p tviewui.CreateParams) error {
+		submitted = true
+		return nil
+	})
+
+	modal.SetAlias("my-server")
+	modal.SetHostName("192.168.1.1")
+	modal.SetUser("   ")
+	modal.Submit()
+
+	if submitted {
+		t.Errorf("submit should fail validation when User is empty")
+	}
+	if !strings.Contains(modal.Error(), "User is required") {
+		t.Errorf("expected 'User is required' error, got: %s", modal.Error())
+	}
+}
+
 func TestCreateModal_ValidationPasswordRequiredWhenAuthKindPassword(t *testing.T) {
 	modal := tviewui.NewCreateModal([]string{"~/.ssh/config"})
 
@@ -158,6 +181,7 @@ func TestCreateModal_ValidationPasswordRequiredWhenAuthKindPassword(t *testing.T
 
 	modal.SetAlias("my-server")
 	modal.SetHostName("192.168.1.1")
+	modal.SetUser("root")
 	modal.SetAuthKind("password")
 	modal.SetPassword("   ")
 	modal.Submit()
@@ -182,6 +206,7 @@ func TestCreateModal_ValidationFailureInvalidPort(t *testing.T) {
 
 		modal.SetAlias("valid-server")
 		modal.SetHostName("10.0.0.1")
+		modal.SetUser("root")
 		modal.SetPort(p)
 		modal.Submit()
 
@@ -207,12 +232,14 @@ func TestCreateModal_ValidationFailureSpacesInFields(t *testing.T) {
 			name:        "spaces in alias",
 			alias:       "my server",
 			host:        "10.0.0.1",
+			user:        "root",
 			expectedErr: "Alias / Name cannot contain spaces",
 		},
 		{
 			name:        "spaces in hostname",
 			alias:       "myserver",
 			host:        "10 . 0 . 0 . 1",
+			user:        "root",
 			expectedErr: "Hostname / IP cannot contain spaces",
 		},
 		{
@@ -226,6 +253,7 @@ func TestCreateModal_ValidationFailureSpacesInFields(t *testing.T) {
 			name:        "spaces in proxyjump",
 			alias:       "myserver",
 			host:        "10.0.0.1",
+			user:        "root",
 			proxy:       "proxy jump",
 			expectedErr: "ProxyJump cannot contain spaces",
 		},
@@ -267,6 +295,7 @@ func TestCreateModal_ValidationPasswordNotRequiredWhenAuthKindKey(t *testing.T) 
 
 	modal.SetAlias("my-server")
 	modal.SetHostName("192.168.1.1")
+	modal.SetUser("root")
 	modal.SetAuthKind("key")
 	modal.SetPassword("")
 	modal.Submit()
@@ -288,6 +317,7 @@ func TestCreateModal_OnSubmitError(t *testing.T) {
 
 	modal.SetAlias("my-server")
 	modal.SetHostName("192.168.1.1")
+	modal.SetUser("root")
 	modal.Submit()
 
 	if modal.Error() != "vault backend error: write failed" {

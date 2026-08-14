@@ -276,6 +276,11 @@ func (m *CreateModal) Submit() {
 		m.updateTitle()
 		return
 	}
+	if m.params.User == "" {
+		m.errMsg = "User is required"
+		m.updateTitle()
+		return
+	}
 	if strings.ContainsAny(m.params.User, " \t\r\n") {
 		m.errMsg = "User cannot contain spaces"
 		m.updateTitle()

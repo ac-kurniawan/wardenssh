@@ -705,6 +705,7 @@ func TestApp_CreateModal_KeyShortcuts_N_and_A(t *testing.T) {
 	modal = app.CreateModal()
 	modal.SetAlias("shortcut-node")
 	modal.SetHostName("10.0.0.99")
+	modal.SetUser("root")
 	modal.SetAuthKind("password")
 	modal.SetPassword("pwd")
 	modal.Submit()
