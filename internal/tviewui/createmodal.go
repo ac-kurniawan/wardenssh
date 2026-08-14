@@ -123,8 +123,10 @@ func (m *CreateModal) buildForm() {
 		itemIdx, _ := m.form.GetFocusedItemIndex()
 		if itemIdx >= 0 && itemIdx < m.form.GetFormItemCount() {
 			item := m.form.GetFormItem(itemIdx)
-			if _, ok := item.(*tview.DropDown); ok {
-				return event
+			if dd, ok := item.(*tview.DropDown); ok {
+				if dd.IsOpen() {
+					return event
+				}
 			}
 		}
 

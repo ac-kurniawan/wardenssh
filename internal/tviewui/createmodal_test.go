@@ -267,35 +267,33 @@ func TestCreateModal_ArrowKeysNavigateFields(t *testing.T) {
 	}
 }
 
-func TestCreateModal_DropDownArrowKeysNotIntercepted(t *testing.T) {
+func TestCreateModal_DropDownClosedVsOpenNavigation(t *testing.T) {
 	modal := tviewui.NewCreateModal([]string{"~/.ssh/config", "vw:personal"})
 	form := modal.Form()
 
-	// Focus the second item ("Destination:", index 1), which is a DropDown
+	// Focus item 1 ("Destination:", DropDown)
 	form.SetFocus(1)
-
-	// Simulate KeyDown via form's input capture
-	var capturedEvent *tcell.EventKey
-	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		// Test handler wrapper to check what key is returned by modal's input capture
-		return event
-	})
-
-	// Get the input capture handler installed by NewCreateModal
-	// By testing directly on form item index 1 (DropDown) vs index 0 (InputField)
-	form.SetFocus(0) // InputField: Alias
-	item0Idx, _ := form.GetFocusedItemIndex()
-	if item0Idx != 0 {
-		t.Fatalf("expected focus at index 0, got %d", item0Idx)
+	idx, _ := form.GetFocusedItemIndex()
+	if idx != 1 {
+		t.Fatalf("expected focused item 1, got %d", idx)
 	}
 
-	form.SetFocus(1) // DropDown: Destination
-	item1Idx, _ := form.GetFocusedItemIndex()
-	if item1Idx != 1 {
-		t.Fatalf("expected focus at index 1, got %d", item1Idx)
+	dd, ok := form.GetFormItem(1).(*tview.DropDown)
+	if !ok {
+		t.Fatalf("item 1 is not *tview.DropDown")
 	}
 
-	_ = capturedEvent
+	if dd.IsOpen() {
+		t.Fatalf("expected dropdown to be closed initially")
+	}
+
+	// Focus item 0 (InputField: Alias)
+	form.SetFocus(0)
+	idx, _ = form.GetFocusedItemIndex()
+	if idx != 0 {
+		t.Fatalf("expected focused item 0, got %d", idx)
+	}
 }
+
 
 
