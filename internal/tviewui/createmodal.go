@@ -115,6 +115,8 @@ func (m *CreateModal) buildForm() {
 		m.triggerCancel()
 	})
 	m.form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		defer m.UpdateFieldStyles()
+
 		if event.Key() == tcell.KeyEscape {
 			m.triggerCancel()
 			return nil
@@ -138,6 +140,39 @@ func (m *CreateModal) buildForm() {
 		}
 		return event
 	})
+	m.UpdateFieldStyles()
+}
+
+// UpdateFieldStyles updates background colors of all form fields so the active
+// (focused) field is highlighted with a distinct background color (tcell.Color24)
+// while unfocused fields retain a subtle dark background (tcell.Color236).
+func (m *CreateModal) UpdateFieldStyles() {
+	focusedIdx, _ := m.form.GetFocusedItemIndex()
+	for i := 0; i < m.form.GetFormItemCount(); i++ {
+		item := m.form.GetFormItem(i)
+		isFocused := (i == focusedIdx)
+
+		bgColor := tcell.Color236
+		fgColor := tcell.Color255
+		if isFocused {
+			bgColor = tcell.Color24
+		}
+
+		switch v := item.(type) {
+		case *tview.InputField:
+			v.SetFieldBackgroundColor(bgColor)
+			v.SetFieldTextColor(fgColor)
+		case *tview.DropDown:
+			v.SetFieldBackgroundColor(bgColor)
+			v.SetFieldTextColor(fgColor)
+			focusedStyle := tcell.StyleDefault.Background(bgColor).Foreground(fgColor)
+			v.SetFocusedStyle(focusedStyle)
+			v.SetListStyles(
+				tcell.StyleDefault.Background(tcell.Color236).Foreground(tcell.Color255),
+				tcell.StyleDefault.Background(tcell.Color24).Foreground(tcell.Color255),
+			)
+		}
+	}
 }
 
 func (m *CreateModal) updateTitle() {

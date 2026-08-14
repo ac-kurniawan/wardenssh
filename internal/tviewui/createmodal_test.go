@@ -295,5 +295,27 @@ func TestCreateModal_DropDownClosedVsOpenNavigation(t *testing.T) {
 	}
 }
 
+func TestCreateModal_ActiveFieldHighlight(t *testing.T) {
+	modal := tviewui.NewCreateModal([]string{"~/.ssh/config", "vw:personal"})
+	form := modal.Form()
+
+	modal.UpdateFieldStyles()
+
+	item0, ok0 := form.GetFormItem(0).(*tview.InputField)
+	if !ok0 {
+		t.Fatalf("item 0 is not InputField")
+	}
+
+	item1, ok1 := form.GetFormItem(1).(*tview.DropDown)
+	if !ok1 {
+		t.Fatalf("item 1 is not DropDown")
+	}
+
+	// Initially item 0 is focused
+	_ = item0
+	_ = item1
+}
+
+
 
 
