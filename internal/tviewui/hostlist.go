@@ -256,6 +256,9 @@ func formatHostLine(e hosts.Entry) string {
 	}
 
 	badge := fmt.Sprintf("[gray:black]%s[-]", e.Source)
+	if e.AuthKind == "password" {
+		badge = fmt.Sprintf("[gray:black]%s [yellow]pw[-][-]", e.Source)
+	}
 
 	hostInfo := e.Alias
 	if e.HostName != "" && e.HostName != e.Alias {

@@ -12,6 +12,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
+	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
@@ -179,6 +180,22 @@ func TestAppTriggerSyncOfflineStatusOnSyncError(t *testing.T) {
 
 var _ = config.CustomFields{}
 var _ = vaultadapter.Client{}
+
+// TestAppConnectPasswordHostWithoutVaultClientDoesNotSpawn: a password host
+// with no vault client must abort before spawning a session or marking live.
+func TestAppConnectPasswordHostWithoutVaultClientDoesNotSpawn(t *testing.T) {
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "prod-db", HostName: "10.0.0.9", Source: "vw:personal", AuthKind: "password"},
+	})
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.HandleConnectForTest(hosts.Entry{Alias: "prod-db", HostName: "10.0.0.9", Source: "vw:personal", AuthKind: "password"})
+	if app.TerminalPane().IsRunning() {
+		t.Error("expected no session spawned without a vault client")
+	}
+	if isLive(hl, "prod-db", "vw:personal") {
+		t.Error("expected host not marked live when connect aborted")
+	}
+}
 
 func liveCountOf(app *tviewui.App) int {
 	n := 0

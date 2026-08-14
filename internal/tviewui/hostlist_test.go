@@ -93,6 +93,21 @@ func TestHostListPaneLiveDot(t *testing.T) {
 	}
 }
 
+// TestHostListPanePasswordBadge: a password-credential host renders a "pw"
+// marker in its source badge.
+func TestHostListPanePasswordBadge(t *testing.T) {
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "prod-db", HostName: "10.0.0.9", Source: "vw:personal", AuthKind: "password"},
+		{Alias: "ci-box", HostName: "10.1.0.10", Source: "vw:personal"},
+	})
+	pane := tviewui.NewHostListPane(hl)
+	pane.Refresh()
+	text := pane.SelectedRenderText()
+	if !strings.Contains(text, "pw") {
+		t.Errorf("password host badge missing 'pw' in %q", text)
+	}
+}
+
 func TestHostListPaneSetSyncStatus(t *testing.T) {
 	pane := tviewui.NewHostListPane(sampleHostList())
 	pane.SetSyncStatus("Synced 20:54")

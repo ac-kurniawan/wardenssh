@@ -434,27 +434,23 @@ func (a *App) handleConnect(entry hosts.Entry) {
 	// New session (previous sessions keep running in the background).
 	sessionID := key
 
-	// Decrypt vault key + load into agent if vault-sourced (Q8/C, Q19/B).
-	if entry.Source != "file" && a.deps.VaultCli != nil && a.deps.Agent != nil {
-		if err := connect.PrepareAgentKey(entry, sessionID, a.deps.VaultCli, a.deps.Agent); err != nil {
-			fmt.Fprintf(os.Stderr, "wardenssh: prepare key: %v\n", err)
-			return
-		}
-	}
-
 	agentPipe := a.deps.AgentPipe
 	if agentPipe == "" {
 		agentPipe = connect.AgentPipePath()
 	}
-	argv := connect.SSHArgv(entry, agentPipe)
-	env := connect.EnvForAgent(agentPipe)
+
+	argv, env, err := connect.CommandFor(entry, sessionID, agentPipe, a.deps.VaultCli, a.deps.Agent)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wardenssh: prepare connect: %v\n", err)
+		return
+	}
 
 	// Mark the host as live.
 	a.hostList.MarkLive(entry.Alias, entry.Source)
 	a.hostPane.Refresh()
 
 	// Start the terminal pane (new session; old ones stay alive).
-	err := a.termPane.StartSSH(entry, argv, env, func(exitErr error) {
+	err = a.termPane.StartSSH(entry, argv, env, func(exitErr error) {
 		// Release session key from agent if loaded.
 		if entry.Source != "file" && a.deps.Agent != nil {
 			_ = a.deps.Agent.ReleaseSession(sessionID)
