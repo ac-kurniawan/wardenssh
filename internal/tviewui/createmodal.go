@@ -115,9 +115,14 @@ func (m *CreateModal) buildForm() {
 		m.triggerCancel()
 	})
 	m.form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape {
+		switch event.Key() {
+		case tcell.KeyEscape:
 			m.triggerCancel()
 			return nil
+		case tcell.KeyDown:
+			return tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone)
+		case tcell.KeyUp:
+			return tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModNone)
 		}
 		return event
 	})
@@ -130,6 +135,9 @@ func (m *CreateModal) updateTitle() {
 		m.form.SetTitle(" Create New SSH Connection ")
 	}
 }
+
+// Form returns the underlying tview.Form primitive.
+func (m *CreateModal) Form() *tview.Form { return m.form }
 
 // Primitive returns the tview primitive for layout embedding.
 func (m *CreateModal) Primitive() tview.Primitive { return m.flex }

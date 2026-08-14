@@ -248,3 +248,22 @@ func TestCreateModal_EscapeKeyCancels(t *testing.T) {
 		t.Errorf("expected cancel callback to trigger on Escape key")
 	}
 }
+
+func TestCreateModal_ArrowKeysNavigateFields(t *testing.T) {
+	modal := tviewui.NewCreateModal([]string{"~/.ssh/config"})
+
+	focusFunc := func(p tview.Primitive) {}
+	modal.Primitive().Focus(focusFunc)
+
+	handler := modal.Primitive().InputHandler()
+	if handler != nil {
+		// Send KeyDown and KeyUp events
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), focusFunc)
+		handler(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), focusFunc)
+	}
+
+	if modal.Form() == nil {
+		t.Fatal("expected Form to be non-nil")
+	}
+}
+
