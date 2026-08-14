@@ -44,12 +44,7 @@ func TestSourceItemsDecryptsFieldsAndFiltersByHost(t *testing.T) {
 		{
 			ID:   "1",
 			Name: enc(t, sess, "prod-db-01"),
-			SshKey: &struct {
-				PrivateKey     string `json:"privateKey"`
-				PublicKey      string `json:"publicKey"`
-				KeyFingerprint string `json:"keyFingerprint"`
-				Passphrase     string `json:"passphrase"`
-			}{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-1")},
+			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-1")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.5"), Type: 0},
 				{Name: enc(t, sess, "user"), Value: enc(t, sess, "admin"), Type: 0},
@@ -58,12 +53,7 @@ func TestSourceItemsDecryptsFieldsAndFiltersByHost(t *testing.T) {
 		{
 			ID:   "2",
 			Name: enc(t, sess, "no-host-item"),
-			SshKey: &struct {
-				PrivateKey     string `json:"privateKey"`
-				PublicKey      string `json:"publicKey"`
-				KeyFingerprint string `json:"keyFingerprint"`
-				Passphrase     string `json:"passphrase"`
-			}{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-2")},
+			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-2")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: "", Type: 0}, // empty host -> excluded
 			},
@@ -103,12 +93,7 @@ func TestSourceDecryptPrivateKey(t *testing.T) {
 		{
 			ID:   "1",
 			Name: enc(t, sess, "test-host"),
-			SshKey: &struct {
-				PrivateKey     string `json:"privateKey"`
-				PublicKey      string `json:"publicKey"`
-				KeyFingerprint string `json:"keyFingerprint"`
-				Passphrase     string `json:"passphrase"`
-			}{PrivateKey: encPriv},
+			SshKey: &vaultclient.SshKey{PrivateKey: encPriv},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "1.2.3.4"), Type: 0},
 			},
@@ -123,6 +108,59 @@ func TestSourceDecryptPrivateKey(t *testing.T) {
 	}
 	if string(decrypted) != "MY-SECRET-ED25519-KEY" {
 		t.Errorf("decrypted = %q, want MY-SECRET-ED25519-KEY", decrypted)
+	}
+}
+
+// TestSourceRemoveCipherPurgesCache: after a permanent delete, RemoveCipher
+// drops the cipher from the source's cached list so the deleted item can never
+// resurface (e.g. if a later sync fails and the cache is re-read).
+func TestSourceRemoveCipherPurgesCache(t *testing.T) {
+	sess := fakeSession(t)
+	cf := config.Default().CustomFields
+
+	ciphers := []vaultclient.Cipher{
+		{
+			ID:   "1",
+			Name: enc(t, sess, "keep-me"),
+			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-1")},
+			Fields: []vaultclient.CustomField{
+				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.1"), Type: 0},
+			},
+		},
+		{
+			ID:   "2",
+			Name: enc(t, sess, "delete-me"),
+			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-2")},
+			Fields: []vaultclient.CustomField{
+				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.2"), Type: 0},
+			},
+		},
+	}
+	src := vaultadapter.NewSource("vw:personal", sess, ciphers, cf)
+
+	before, _ := src.Items()
+	if len(before) != 2 {
+		t.Fatalf("before RemoveCipher: got %d items, want 2", len(before))
+	}
+
+	src.RemoveCipher("2")
+
+	after, err := src.Items()
+	if err != nil {
+		t.Fatalf("Items after RemoveCipher: %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("after RemoveCipher: got %d items, want 1", len(after))
+	}
+	if after[0].ID != "1" {
+		t.Errorf("surviving item ID = %q, want 1", after[0].ID)
+	}
+
+	// Removing an unknown ID is a no-op, not an error.
+	src.RemoveCipher("does-not-exist")
+	still, _ := src.Items()
+	if len(still) != 1 {
+		t.Fatalf("removing unknown id changed the cache: got %d items", len(still))
 	}
 }
 
@@ -152,12 +190,7 @@ func TestSourceSyncUpdatesCiphers(t *testing.T) {
 		{
 			ID:   "1",
 			Name: enc(t, sess, "host-1"),
-			SshKey: &struct {
-				PrivateKey     string `json:"privateKey"`
-				PublicKey      string `json:"publicKey"`
-				KeyFingerprint string `json:"keyFingerprint"`
-				Passphrase     string `json:"passphrase"`
-			}{PrivateKey: enc(t, sess, "KEY-1")},
+			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-1")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.1"), Type: 0},
 			},

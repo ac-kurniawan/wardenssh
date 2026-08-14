@@ -654,7 +654,7 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 		if algo == "" {
 			algo = "ed25519"
 		}
-		privPEM, pubAuth, err := sshconfig.GenerateKeyPair(algo)
+		privPEM, pubAuth, fingerprint, err := sshconfig.GenerateKeyPair(algo)
 		if err != nil {
 			return fmt.Errorf("generate keypair: %w", err)
 		}
@@ -666,17 +666,17 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 		if err != nil {
 			return fmt.Errorf("encrypt public key: %w", err)
 		}
+		encFp, err := sess.EncryptField(fingerprint)
+		if err != nil {
+			return fmt.Errorf("encrypt key fingerprint: %w", err)
+		}
 		cipherItem = vaultclient.Cipher{
 			Name: encName,
 			Type: 5,
-			SshKey: &struct {
-				PrivateKey     string `json:"privateKey"`
-				PublicKey      string `json:"publicKey"`
-				KeyFingerprint string `json:"keyFingerprint"`
-				Passphrase     string `json:"passphrase"`
-			}{
-				PrivateKey: encPriv,
-				PublicKey:  encPub,
+			SshKey: &vaultclient.SshKey{
+				PrivateKey:     encPriv,
+				PublicKey:      encPub,
+				KeyFingerprint: encFp,
 			},
 			Fields: customFields,
 		}
@@ -749,6 +749,9 @@ func (a *App) HandleDeleteConnection(entry hosts.Entry) error {
 									if err := vc.DeleteCipher(sess, item.ID); err != nil {
 										return fmt.Errorf("delete vault cipher: %w", err)
 									}
+									// Permanent delete is done server-side; purge the
+									// local cache too so the item never resurfaces.
+									targetSource.RemoveCipher(item.ID)
 								}
 								break
 							}

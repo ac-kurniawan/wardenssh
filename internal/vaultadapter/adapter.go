@@ -228,6 +228,19 @@ func (s *Source) AddCipher(c vaultclient.Cipher) {
 	s.ciphers = append(s.ciphers, c)
 }
 
+// RemoveCipher drops the cipher with the given id from the source's cached
+// list. Called after a permanent delete so the deleted item never resurfaces
+// from the local cache (e.g. when a later sync fails and the cache is kept).
+// Removing an unknown id is a no-op.
+func (s *Source) RemoveCipher(id string) {
+	for i, c := range s.ciphers {
+		if c.ID == id {
+			s.ciphers = append(s.ciphers[:i], s.ciphers[i+1:]...)
+			return
+		}
+	}
+}
+
 // Compile-time check: Source satisfies vault.Source and Client satisfies vault.Client.
 var _ vault.Source = (*Source)(nil)
 var _ vault.Client = (*Client)(nil)

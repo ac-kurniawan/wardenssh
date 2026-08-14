@@ -110,6 +110,42 @@ func TestSyncParsesCamelCaseKeys(t *testing.T) {
 	}
 }
 
+func TestSyncExcludesTrashedCiphers(t *testing.T) {
+	// VaultWarden/BitWarden return trashed (soft-deleted) ciphers from
+	// /api/ciphers with a non-null "deletedDate". WardenSSH must treat those
+	// as gone: they must never reach the host list.
+	ciphersJSON := `[
+		{
+			"id": "active-1",
+			"name": "2.enc==",
+			"type": 5,
+			"sshKey": {"privateKey": "2.pk==", "publicKey": "2.pub=="}
+		},
+		{
+			"id": "trashed-1",
+			"name": "2.enc==",
+			"type": 5,
+			"sshKey": {"privateKey": "2.pk==", "publicKey": "2.pub=="},
+			"deletedDate": "2026-08-10T12:00:00.000Z"
+		}
+	]`
+	srv := fakeCiphersServer(t, ciphersJSON)
+	defer srv.Close()
+
+	c := New(srv.URL)
+	sess := &Session{AccessToken: "tok"}
+	sr, err := c.Sync(sess)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sr.Ciphers) != 1 {
+		t.Fatalf("expected 1 cipher (trashed excluded), got %d", len(sr.Ciphers))
+	}
+	if sr.Ciphers[0].ID != "active-1" {
+		t.Errorf("ID = %q, want active-1", sr.Ciphers[0].ID)
+	}
+}
+
 func TestSyncEmptyVaultReturnsNoCiphers(t *testing.T) {
 	srv := fakeCiphersServer(t, `[]`)
 	defer srv.Close()

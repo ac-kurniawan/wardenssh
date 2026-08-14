@@ -636,6 +636,24 @@ func TestApp_CreateConnection_VaultTarget_KeyAuth(t *testing.T) {
 		t.Errorf("decrypted public key invalid: %s, err=%v", string(pubKeyBytes), err)
 	}
 
+	// BitWarden SSH-Key items require a non-empty keyFingerprint. VaultWarden
+	// nulls the entire sshKey object when it is missing/empty, and the web
+	// vault crashes parsing an empty one.
+	if postedCipher.SshKey.KeyFingerprint == "" {
+		t.Fatalf("expected keyFingerprint to be populated")
+	}
+	fpBytes, err := sess.DecryptField(postedCipher.SshKey.KeyFingerprint)
+	if err != nil {
+		t.Fatalf("decrypt keyFingerprint: %v", err)
+	}
+	if !strings.HasPrefix(string(fpBytes), "SHA256:") {
+		t.Errorf("decrypted keyFingerprint = %q, want SHA256:... prefix", string(fpBytes))
+	}
+	// Unencrypted key: passphrase must not leak as an empty EncString.
+	if postedCipher.SshKey.Passphrase != "" {
+		t.Errorf("passphrase should be omitted for unencrypted key, got %q", postedCipher.SshKey.Passphrase)
+	}
+
 	// Verify custom fields
 	customMap := make(map[string]string)
 	for _, f := range postedCipher.Fields {
@@ -780,6 +798,91 @@ func TestApp_DeleteConnection_FileAndVault(t *testing.T) {
 	cfgContent, _ := os.ReadFile(configPath)
 	if strings.Contains(string(cfgContent), "Host file-to-delete") {
 		t.Errorf("expected file-to-delete block removed from config:\n%s", string(cfgContent))
+	}
+}
+
+func TestApp_DeleteConnection_Vault_PurgesSourceCache(t *testing.T) {
+	symKey := bytes.Repeat([]byte{0x02}, 64)
+	sess := &vaultclient.Session{
+		AccessToken: "delete-token",
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+	}
+
+	enc := func(plain string) string {
+		s, err := sess.EncryptField(plain)
+		if err != nil {
+			t.Fatalf("EncryptField(%q): %v", plain, err)
+		}
+		return s
+	}
+
+	// Fake vault server: DELETE /api/ciphers/{id} = permanent delete.
+	var deletedPath string
+	var deletedAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers/vault-cipher-777", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+			return
+		}
+		deletedPath = r.URL.Path
+		deletedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cf := config.CustomFields{Host: "host", User: "user", Port: "port", ProxyJump: "proxyjump", Type: "type"}
+	src := vaultadapter.NewSource("vw", sess, []vaultclient.Cipher{
+		{
+			ID:   "vault-cipher-777",
+			Name: enc("vault-to-delete"),
+			Type: 5,
+			SshKey: &vaultclient.SshKey{PrivateKey: enc("KEY")},
+			Fields: []vaultclient.CustomField{
+				{Name: enc("host"), Value: enc("5.6.7.8"), Type: 0},
+			},
+		},
+	}, cf)
+	vc := vaultadapter.NewClient(src)
+
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "vault-to-delete", HostName: "5.6.7.8", Source: "vw"},
+	})
+	app := tviewui.New(hl, tviewui.Deps{VaultCli: vc, CustomFields: cf}, []config.Vault{
+		{Name: "vw", Server: srv.URL, Email: "user@example.com"},
+	})
+
+	// Precondition: the item is visible in the source cache.
+	itemsBefore, _ := src.Items()
+	if len(itemsBefore) != 1 {
+		t.Fatalf("expected 1 cached item before delete, got %d", len(itemsBefore))
+	}
+
+	err := app.HandleDeleteConnection(hosts.Entry{Alias: "vault-to-delete", HostName: "5.6.7.8", Source: "vw"})
+	if err != nil {
+		t.Fatalf("HandleDeleteConnection vault failed: %v", err)
+	}
+
+	// Server must receive the permanent DELETE for the exact cipher.
+	if deletedPath != "/api/ciphers/vault-cipher-777" {
+		t.Errorf("deleted path = %q, want /api/ciphers/vault-cipher-777", deletedPath)
+	}
+	if deletedAuth != "Bearer delete-token" {
+		t.Errorf("auth = %q, want 'Bearer delete-token'", deletedAuth)
+	}
+
+	// The cipher must be purged from the source cache (no stale history).
+	itemsAfter, _ := src.Items()
+	if len(itemsAfter) != 0 {
+		t.Fatalf("expected source cache empty after delete, got %d items", len(itemsAfter))
+	}
+
+	// And the host list entry must be gone.
+	all := app.HostList().All()
+	if len(all) != 0 {
+		t.Errorf("expected host list empty after delete, got: %+v", all)
 	}
 }
 

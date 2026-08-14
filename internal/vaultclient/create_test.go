@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -49,12 +50,7 @@ func TestCreateCipher_Success_SshKey(t *testing.T) {
 	sshKeyItem := Cipher{
 		Name: "2.enc_name==",
 		Type: 5,
-		SshKey: &struct {
-			PrivateKey     string `json:"privateKey"`
-			PublicKey      string `json:"publicKey"`
-			KeyFingerprint string `json:"keyFingerprint"`
-			Passphrase     string `json:"passphrase"`
-		}{
+		SshKey: &SshKey{
 			PrivateKey: "2.enc_privkey==",
 			PublicKey:  "2.enc_pubkey==",
 		},
@@ -200,6 +196,45 @@ func TestCreateCipher_ServerErrors(t *testing.T) {
 				t.Fatalf("expected error for status %d, got nil", tt.statusCode)
 			}
 		})
+	}
+}
+
+func TestCreateCipherBodyOmitsEmptyFields(t *testing.T) {
+	// Regression: WardenSSH must not POST zero-valued "id"/"notes"/"deletedDate"
+	// keys. VaultWarden stores an empty "notes" string, and the BitWarden web
+	// vault parses every cipher's notes as an EncString — "" (no dot) crashes
+	// it with EncString(InvalidTypeSymm { enc_type: 0, parts: 1 }).
+	var rawBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		rawBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"c1","name":"2.enc_name==","type":1}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	sess := &Session{AccessToken: "token"}
+	item := Cipher{
+		Name: "2.enc_name==",
+		Type: 1,
+		Login: &Login{
+			Username: "2.enc_user==",
+			Password: "2.enc_pass==",
+		},
+		Fields: []CustomField{
+			{Name: "2.host==", Value: "2.val==", Type: 0},
+		},
+	}
+	if _, err := c.CreateCipher(sess, item); err != nil {
+		t.Fatalf("CreateCipher failed: %v", err)
+	}
+
+	for _, key := range []string{`"id"`, `"notes"`, `"deletedDate"`} {
+		if strings.Contains(rawBody, key) {
+			t.Errorf("request body must not contain %s (empty field leaked into vault): %s", key, rawBody)
+		}
 	}
 }
 

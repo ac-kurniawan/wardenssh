@@ -253,21 +253,36 @@ type Login struct {
 	Password string `json:"password"`
 }
 
+// SshKey holds an SSH-Key cipher's type-5 data. keyFingerprint and passphrase
+// are omitempty so empty values are never posted: an empty keyFingerprint makes
+// VaultWarden null the entire sshKey, and an empty passphrase crashes the web
+// vault's EncString parser.
+type SshKey struct {
+	PrivateKey     string `json:"privateKey"`
+	PublicKey      string `json:"publicKey"`
+	KeyFingerprint string `json:"keyFingerprint,omitempty"`
+	Passphrase     string `json:"passphrase,omitempty"`
+}
+
 // Cipher is a vault item as returned by /api/sync or /api/ciphers.
 // SSH-Key items have Type==5 on VaultWarden; login items are Type==1.
 type Cipher struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`  // encrypted string
-	Type   int    `json:"type"`  // 1=Login, 2=SecureNote, 3=Card, 4=Identity, 5=SshKey
-	Notes  string `json:"notes"` // encrypted, optional
-	SshKey *struct {
-		PrivateKey     string `json:"privateKey"`
-		PublicKey      string `json:"publicKey"`
-		KeyFingerprint string `json:"keyFingerprint"`
-		Passphrase     string `json:"passphrase"`
-	} `json:"sshKey,omitempty"`
-	Login  *Login        `json:"login,omitempty"`
-	Fields []CustomField `json:"fields,omitempty"`
+	ID   string `json:"id,omitempty"` // server-assigned on create
+	Name string `json:"name"`         // encrypted string
+	Type int    `json:"type"`         // 1=Login, 2=SecureNote, 3=Card, 4=Identity, 5=SshKey
+	// Notes is encrypted, optional. omitempty is CRITICAL: posting "notes":""
+	// makes VaultWarden store an empty notes string, which the BitWarden web
+	// vault parses as an EncString and crashes on ("" has no '.' type prefix:
+	// "EncString(InvalidTypeSymm { enc_type: \"0\", parts: 1 })").
+	Notes string `json:"notes,omitempty"`
+	// DeletedDate is set (non-empty) when the item is in the trash. Both
+	// BitWarden and VaultWarden return trashed ciphers from /api/ciphers with
+	// this field populated; Sync skips them so they never surface in the host
+	// list.
+	DeletedDate string  `json:"deletedDate,omitempty"`
+	SshKey      *SshKey `json:"sshKey,omitempty"`
+	Login       *Login  `json:"login,omitempty"`
+	Fields      []CustomField `json:"fields,omitempty"`
 }
 
 // CustomField is a name/value pair on a cipher (host/user/port/proxyjump live here).
@@ -292,7 +307,9 @@ func (c *Client) Sync(s *Session) (*SyncResponse, error) {
 	return &SyncResponse{Ciphers: ciphers}, nil
 }
 
-// fetchCiphers calls GET /api/ciphers, which returns {"data":[...]}.
+// fetchCiphers calls GET /api/ciphers, which returns {"data":[...]}. Ciphers
+// sitting in the trash (deletedDate set) are dropped here — the server returns
+// them but they are semantically deleted and must never reach the host list.
 func (c *Client) fetchCiphers(s *Session) ([]Cipher, error) {
 	req, _ := http.NewRequest(http.MethodGet, c.BaseURL+"/api/ciphers", nil)
 	req.Header.Set("Authorization", "Bearer "+s.AccessToken)
@@ -311,7 +328,14 @@ func (c *Client) fetchCiphers(s *Session) ([]Cipher, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
 		return nil, fmt.Errorf("ciphers: decode: %w", err)
 	}
-	return wrapper.Data, nil
+	active := make([]Cipher, 0, len(wrapper.Data))
+	for _, c := range wrapper.Data {
+		if c.DeletedDate != "" {
+			continue // trashed — ignore
+		}
+		active = append(active, c)
+	}
+	return active, nil
 }
 
 // DecryptField decrypts a BitWarden encrypted string under the session's

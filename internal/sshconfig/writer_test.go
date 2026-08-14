@@ -11,6 +11,27 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func TestGenerateKeyPairFingerprint(t *testing.T) {
+	// BitWarden SSH-Key items require a non-empty keyFingerprint
+	// ("SHA256:<base64>" of the public key, same as ssh-keygen -lf).
+	// VaultWarden nulls the whole sshKey when it's missing, and the web
+	// vault crashes parsing an empty one.
+	_, pubAuth, fp, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	if !strings.HasPrefix(fp, "SHA256:") {
+		t.Fatalf("fingerprint = %q, want SHA256:... prefix", fp)
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(pubAuth))
+	if err != nil {
+		t.Fatalf("ParseAuthorizedKey: %v", err)
+	}
+	if want := ssh.FingerprintSHA256(pub); fp != want {
+		t.Errorf("fingerprint = %q, want %q", fp, want)
+	}
+}
+
 func TestGenerateKeyToFile_Ed25519(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "id_ed25519_test")
