@@ -45,6 +45,7 @@ type App struct {
 	quitModal   *QuitModal
 	discModal   *DisconnectModal
 	createModal *CreateModal
+	deleteModal *DeleteModal
 	footer      *Footer
 
 	root    *tview.Flex
@@ -57,6 +58,7 @@ type App struct {
 	inQuit        bool
 	inDisconnect  bool
 	inCreate      bool
+	inDelete      bool
 	sshConfigPath string
 	termFocused   bool // focus is on the terminal pane (vs. the host list)
 	syncStarted   bool
@@ -85,6 +87,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	a.hostPane.SetOnScopeChange(func() {})
 	a.hostPane.SetOnRefresh(func() { _ = a.TriggerSync() })
 	a.hostPane.SetOnCreate(a.showCreateModal)
+	a.hostPane.SetOnDelete(a.showDeleteModal)
 
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -366,6 +369,40 @@ func (a *App) CloseCreateModal() {
 	a.overlay.RemovePage("create")
 	a.hostPane.Refresh()
 	a.app.SetFocus(a.hostPane.Primitive())
+}
+
+// InDeleteModal reports whether the delete confirmation modal is active.
+func (a *App) InDeleteModal() bool { return a.inDelete }
+
+// DeleteModal returns the current DeleteModal instance.
+func (a *App) DeleteModal() *DeleteModal { return a.deleteModal }
+
+// ShowDeleteModal opens the delete confirmation modal for a given host entry.
+func (a *App) ShowDeleteModal(entry hosts.Entry) { a.showDeleteModal(entry) }
+
+// CloseDeleteModal closes the delete confirmation modal.
+func (a *App) CloseDeleteModal() {
+	if a.inDelete {
+		a.inDelete = false
+		a.overlay.RemovePage("delete")
+		a.hostPane.Refresh()
+		a.app.SetFocus(a.hostPane.Primitive())
+	}
+}
+
+func (a *App) showDeleteModal(entry hosts.Entry) {
+	if a.inDelete {
+		return
+	}
+	a.inDelete = true
+	a.deleteModal = NewDeleteModal(entry.Alias, entry.Source)
+	a.deleteModal.SetOnDelete(func() {
+		_ = a.HandleDeleteConnection(entry)
+		a.CloseDeleteModal()
+	})
+	a.deleteModal.SetOnCancel(a.CloseDeleteModal)
+	a.overlay.AddPage("delete", a.deleteModal.Primitive(), true, true)
+	a.app.SetFocus(a.deleteModal.Primitive())
 }
 
 // SetSSHConfigPathForTest overrides the ssh config path used when writing host entries (tests only).
@@ -669,6 +706,60 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 		AuthKind:  authKind,
 	}
 	a.hostList.Merge([]hosts.Entry{newEntry})
+	a.hostPane.Refresh()
+	return nil
+}
+
+// HandleDeleteConnection deletes an SSH connection entry from ~/.ssh/config or Vault.
+func (a *App) HandleDeleteConnection(entry hosts.Entry) error {
+	if entry.Source == "file" || entry.Source == "~/.ssh/config" {
+		configPath := a.sshConfigPath
+		if configPath == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("resolve home dir: %w", err)
+			}
+			configPath = filepath.Join(home, ".ssh", "config")
+		}
+		if err := sshconfig.DeleteHostEntry(configPath, entry.Alias); err != nil {
+			return fmt.Errorf("delete ssh config entry: %w", err)
+		}
+	} else {
+		if a.deps.VaultCli != nil {
+			if vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client); ok {
+				targetSource := vAdapterClient.SourceByName(entry.Source)
+				if targetSource != nil {
+					items, err := targetSource.Items()
+					if err == nil {
+						for _, item := range items {
+							if item.Name == entry.Alias {
+								sess := targetSource.Session()
+								var serverURL string
+								for _, v := range a.vaults {
+									if v.Name == entry.Source || "vw:"+v.Name == entry.Source {
+										serverURL = v.Server
+										break
+									}
+								}
+								if serverURL == "" && len(a.vaults) > 0 {
+									serverURL = a.vaults[0].Server
+								}
+								if sess != nil {
+									vc := vaultclientNew(serverURL)
+									if err := vc.DeleteCipher(sess, item.ID); err != nil {
+										return fmt.Errorf("delete vault cipher: %w", err)
+									}
+								}
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	a.hostList.Remove(entry.Alias, entry.Source)
 	a.hostPane.Refresh()
 	return nil
 }

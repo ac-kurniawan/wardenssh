@@ -22,6 +22,7 @@ type HostListPane struct {
 	onScope    func()
 	onRefresh  func()
 	onCreate   func()
+	onDelete   func(hosts.Entry)
 	syncStatus string
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
 }
@@ -67,6 +68,9 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		case tcell.KeyCtrlN:
 			p.TriggerCreate()
 			return nil
+		case tcell.KeyCtrlD, tcell.KeyDelete:
+			p.TriggerDelete()
+			return nil
 		case tcell.KeyEnter:
 			if p.onConnect != nil {
 				if e, ok := p.SelectedEntry(); ok {
@@ -75,8 +79,12 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 			}
 			return nil
 		}
-		if event.Rune() == 'r' {
+		if event.Rune() == 'r' || event.Rune() == 'R' {
 			p.TriggerRefresh()
+			return nil
+		}
+		if event.Rune() == 'd' || event.Rune() == 'D' {
+			p.TriggerDelete()
 			return nil
 		}
 		return event
@@ -116,6 +124,9 @@ func (p *HostListPane) handleFilterKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case tcell.KeyCtrlR:
 		p.TriggerRefresh()
+		return nil
+	case tcell.KeyCtrlD:
+		p.TriggerDelete()
 		return nil
 	case tcell.KeyEscape:
 		if p.filter.GetText() != "" {
@@ -158,7 +169,7 @@ func (p *HostListPane) TriggerRefresh() {
 	}
 }
 
-// SetOnCreate sets the callback for creating a new connection ('n' / 'a' key).
+// SetOnCreate sets the callback for creating a new connection (Ctrl+N).
 func (p *HostListPane) SetOnCreate(fn func()) {
 	p.onCreate = fn
 }
@@ -167,6 +178,20 @@ func (p *HostListPane) SetOnCreate(fn func()) {
 func (p *HostListPane) TriggerCreate() {
 	if p.onCreate != nil {
 		p.onCreate()
+	}
+}
+
+// SetOnDelete sets the callback for deleting a connection ('d' / Delete key).
+func (p *HostListPane) SetOnDelete(fn func(hosts.Entry)) {
+	p.onDelete = fn
+}
+
+// TriggerDelete fires the delete callback for the currently selected entry.
+func (p *HostListPane) TriggerDelete() {
+	if p.onDelete != nil {
+		if e, ok := p.SelectedEntry(); ok {
+			p.onDelete(e)
+		}
 	}
 }
 

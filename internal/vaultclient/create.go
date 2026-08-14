@@ -46,3 +46,33 @@ func (c *Client) CreateCipher(sess *Session, item Cipher) (*Cipher, error) {
 
 	return &created, nil
 }
+
+// DeleteCipher deletes a Cipher item from VaultWarden / BitWarden via DELETE /api/ciphers/{id}.
+func (c *Client) DeleteCipher(sess *Session, id string) error {
+	if sess == nil || sess.AccessToken == "" {
+		return errors.New("vaultclient: session or access token is required")
+	}
+	if id == "" {
+		return errors.New("vaultclient: cipher id is required")
+	}
+
+	url := fmt.Sprintf("%s/api/ciphers/%s", c.BaseURL, id)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("delete cipher: new request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+sess.AccessToken)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete cipher: status %d: %s", resp.StatusCode, string(raw))
+	}
+
+	return nil
+}

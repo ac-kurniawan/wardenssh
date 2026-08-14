@@ -220,3 +220,19 @@ func fuzzyMatch(haystack, needle string) bool {
 	}
 	return true
 }
+
+// Remove deletes an entry matching alias and source from the list and updates available scopes.
+func (l *List) Remove(alias, source string) {
+	var next []Entry
+	for _, e := range l.entries {
+		if e.Alias == alias && e.Source == source {
+			continue
+		}
+		next = append(next, e)
+	}
+	l.entries = next
+	l.scopes = l.deriveScopes()
+	if l.scopeIdx >= len(l.scopes) {
+		l.scopeIdx = 0
+	}
+}

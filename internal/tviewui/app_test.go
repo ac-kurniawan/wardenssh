@@ -16,6 +16,7 @@ import (
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
+	"github.com/ac-kurniawan/wardenssh/internal/sshconfig"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
@@ -725,6 +726,62 @@ func TestApp_CreateModal_KeyShortcuts_N_and_A(t *testing.T) {
 		t.Errorf("shortcut-node not found in host list")
 	}
 }
+
+func TestApp_DeleteConnection_FileAndVault(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	_ = sshconfig.AppendHostEntry(configPath, sshconfig.HostConfig{
+		Alias:    "file-to-delete",
+		HostName: "1.2.3.4",
+	})
+
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "file-to-delete", HostName: "1.2.3.4", Source: "file"},
+		{Alias: "vault-to-delete", HostName: "5.6.7.8", Source: "vw"},
+	})
+
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.SetSSHConfigPathForTest(configPath)
+
+	// Test DeleteModal lifecycle
+	if app.InDeleteModal() {
+		t.Fatal("expected not in delete modal initially")
+	}
+
+	app.ShowDeleteModal(hosts.Entry{Alias: "file-to-delete", Source: "file"})
+	if !app.InDeleteModal() {
+		t.Fatal("expected to be in delete modal")
+	}
+
+	if app.DeleteModal() == nil {
+		t.Fatal("expected non-nil DeleteModal")
+	}
+
+	// Delete file connection
+	err := app.HandleDeleteConnection(hosts.Entry{Alias: "file-to-delete", Source: "file"})
+	if err != nil {
+		t.Fatalf("HandleDeleteConnection file failed: %v", err)
+	}
+
+	app.CloseDeleteModal()
+	if app.InDeleteModal() {
+		t.Fatal("expected delete modal closed")
+	}
+
+	// Verify host list updated
+	all := app.HostList().All()
+	if len(all) != 1 || all[0].Alias != "vault-to-delete" {
+		t.Errorf("expected only vault-to-delete in host list, got: %+v", all)
+	}
+
+	// Verify config file updated
+	cfgContent, _ := os.ReadFile(configPath)
+	if strings.Contains(string(cfgContent), "Host file-to-delete") {
+		t.Errorf("expected file-to-delete block removed from config:\n%s", string(cfgContent))
+	}
+}
+
 
 
 

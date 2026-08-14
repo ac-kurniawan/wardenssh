@@ -240,3 +240,40 @@ func TestAppendHostEntry_ParseRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDeleteHostEntry(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	_ = sshconfig.AppendHostEntry(configPath, sshconfig.HostConfig{
+		Alias:    "host1",
+		HostName: "1.1.1.1",
+	})
+	_ = sshconfig.AppendHostEntry(configPath, sshconfig.HostConfig{
+		Alias:    "host2",
+		HostName: "2.2.2.2",
+	})
+	_ = sshconfig.AppendHostEntry(configPath, sshconfig.HostConfig{
+		Alias:    "host3",
+		HostName: "3.3.3.3",
+	})
+
+	err := sshconfig.DeleteHostEntry(configPath, "host2")
+	if err != nil {
+		t.Fatalf("DeleteHostEntry failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	str := string(content)
+	if !strings.Contains(str, "Host host1") || !strings.Contains(str, "Host host3") {
+		t.Errorf("expected host1 and host3 to remain in config:\n%s", str)
+	}
+	if strings.Contains(str, "Host host2") || strings.Contains(str, "2.2.2.2") {
+		t.Errorf("expected host2 block to be deleted, but found in config:\n%s", str)
+	}
+}
+
+

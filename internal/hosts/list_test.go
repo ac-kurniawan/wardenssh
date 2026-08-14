@@ -320,3 +320,17 @@ func TestListReplaceVaultEntriesPreservesLiveState(t *testing.T) {
 		t.Errorf("prod-db-01 missing from All()")
 	}
 }
+
+func TestListRemoveEntry(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "host1", HostName: "1.1.1.1", Source: "file"},
+		{Alias: "host2", HostName: "2.2.2.2", Source: "vw"},
+	})
+
+	l.Remove("host1", "file")
+
+	all := l.All()
+	if len(all) != 1 || all[0].Alias != "host2" {
+		t.Errorf("All() = %v, want [host2]", all)
+	}
+}

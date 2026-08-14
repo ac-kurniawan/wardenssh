@@ -126,3 +126,46 @@ func AppendHostEntry(configPath string, cfg HostConfig) error {
 
 	return nil
 }
+
+// DeleteHostEntry removes a Host block matching alias from the ssh config file.
+func DeleteHostEntry(configPath string, alias string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var newLines []string
+	skipping := false
+
+	targetAlias := strings.ToLower(alias)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "Host") {
+			matched := false
+			for _, h := range fields[1:] {
+				if strings.ToLower(h) == targetAlias {
+					matched = true
+					break
+				}
+			}
+			skipping = matched
+		}
+
+		if !skipping {
+			newLines = append(newLines, line)
+		}
+	}
+
+	output := strings.Join(newLines, "\n")
+	if err := os.WriteFile(configPath, []byte(output), 0600); err != nil {
+		return fmt.Errorf("write config file: %w", err)
+	}
+
+	return nil
+}

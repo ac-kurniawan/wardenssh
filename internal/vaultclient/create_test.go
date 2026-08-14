@@ -202,3 +202,50 @@ func TestCreateCipher_ServerErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestDeleteCipher_Success(t *testing.T) {
+	var capturedMethod, capturedPath, capturedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedPath = r.URL.Path
+		capturedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	sess := &Session{AccessToken: "delete-token-777"}
+	err := c.DeleteCipher(sess, "cipher-id-xyz")
+	if err != nil {
+		t.Fatalf("DeleteCipher failed: %v", err)
+	}
+
+	if capturedMethod != http.MethodDelete {
+		t.Errorf("method = %q, want DELETE", capturedMethod)
+	}
+	if capturedPath != "/api/ciphers/cipher-id-xyz" {
+		t.Errorf("path = %q, want /api/ciphers/cipher-id-xyz", capturedPath)
+	}
+	if capturedAuth != "Bearer delete-token-777" {
+		t.Errorf("auth = %q, want 'Bearer delete-token-777'", capturedAuth)
+	}
+}
+
+func TestDeleteCipher_Error(t *testing.T) {
+	c := New("http://localhost:8000")
+	if err := c.DeleteCipher(nil, "id"); err == nil {
+		t.Error("expected error for nil session")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}))
+	defer srv.Close()
+
+	c2 := New(srv.URL)
+	sess := &Session{AccessToken: "valid"}
+	if err := c2.DeleteCipher(sess, "missing-id"); err == nil {
+		t.Error("expected error for 404 response")
+	}
+}
