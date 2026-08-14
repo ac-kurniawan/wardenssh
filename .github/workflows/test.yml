@@ -48,4 +48,4 @@ jobs:
             *)              target="darwin/amd64" ;;
           esac
           echo "Cross-compiling for ${target}"
-          GOOS="${target%/*}" GOARCH="${target#*/}" go build -o /tmp/wardenssh-cross .
+          GOOS="${target%/*}" GOARCH="${target#*/}" go build -o wardenssh-cross .

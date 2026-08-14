@@ -114,7 +114,8 @@ func findSSHAdd(t *testing.T) string {
 	}
 	p, err := exec.LookPath("ssh-add.exe")
 	if err != nil {
-		t.Fatalf("ssh-add.exe not found: %v", err)
+		t.Skipf("ssh-add.exe not found: %v", err)
+		return ""
 	}
 	return p
 }
