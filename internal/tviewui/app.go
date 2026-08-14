@@ -400,10 +400,7 @@ func (a *App) availableTargets() []string {
 	if a.deps.VaultCli != nil {
 		for _, src := range a.deps.VaultCli.Sources() {
 			name := src.Name()
-			if !strings.HasPrefix(name, "vw:") {
-				name = "vw:" + name
-			}
-			if !seen[name] {
+			if name != "" && !seen[name] {
 				seen[name] = true
 				targets = append(targets, name)
 			}
@@ -411,10 +408,7 @@ func (a *App) availableTargets() []string {
 	}
 	for _, v := range a.vaults {
 		name := v.Name
-		if !strings.HasPrefix(name, "vw:") {
-			name = "vw:" + name
-		}
-		if !seen[name] {
+		if name != "" && !seen[name] {
 			seen[name] = true
 			targets = append(targets, name)
 		}
@@ -505,7 +499,10 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 
 	if a.deps.VaultCli != nil {
 		if vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client); ok {
-			targetSource = vAdapterClient.SourceByName(vaultName)
+			targetSource = vAdapterClient.SourceByName(params.Target)
+			if targetSource == nil {
+				targetSource = vAdapterClient.SourceByName(vaultName)
+			}
 			if targetSource != nil {
 				sess = targetSource.Session()
 				cf = targetSource.Fields()
@@ -535,7 +532,7 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 
 	// Find server URL from configured vaults
 	for _, v := range a.vaults {
-		if v.Name == vaultName || "vw:"+v.Name == params.Target {
+		if v.Name == vaultName || v.Name == params.Target || "vw:"+v.Name == params.Target {
 			serverURL = v.Server
 			break
 		}
@@ -658,8 +655,8 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 	}
 
 	sourceLabel := params.Target
-	if !strings.HasPrefix(sourceLabel, "vw:") && sourceLabel != "file" && sourceLabel != "~/.ssh/config" {
-		sourceLabel = "vw:" + sourceLabel
+	if targetSource != nil {
+		sourceLabel = targetSource.Name()
 	}
 
 	newEntry := hosts.Entry{

@@ -490,11 +490,75 @@ func TestApp_CreateConnection_VaultTarget_PasswordAuth(t *testing.T) {
 	if found == nil {
 		t.Fatalf("vw-pass-server host not found in host list: %+v", entries)
 	}
-	if found.Source != "vw:personal" {
-		t.Errorf("Source = %q, want 'vw:personal'", found.Source)
+	if found.Source != "vw:personal" && found.Source != "personal" {
+		t.Errorf("Source = %q, want 'vw:personal' or 'personal'", found.Source)
 	}
 	if found.AuthKind != "password" {
 		t.Errorf("AuthKind = %q, want 'password'", found.AuthKind)
+	}
+}
+
+func TestApp_CreateConnection_VaultTarget_VWName(t *testing.T) {
+	symKey := bytes.Repeat([]byte{0x01}, 64)
+	sess := &vaultclient.Session{
+		AccessToken: "test-token",
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+	}
+
+	var postedCipher vaultclient.Cipher
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&postedCipher)
+		postedCipher.ID = "cipher-vw-999"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(postedCipher)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cf := config.CustomFields{Host: "host", Type: "type"}
+	src := vaultadapter.NewSource("vw", sess, nil, cf)
+	vc := vaultadapter.NewClient(src)
+
+	vaults := []config.Vault{
+		{Name: "vw", Server: srv.URL, Email: "user@example.com"},
+	}
+	hl := hosts.NewList(nil)
+	app := tviewui.New(hl, tviewui.Deps{
+		VaultCli:     vc,
+		CustomFields: cf,
+	}, vaults)
+
+	params := tviewui.CreateParams{
+		Alias:    "vw-server",
+		Target:   "vw",
+		HostName: "10.0.0.99",
+		AuthKind: "password",
+		Password: "pass",
+	}
+
+	err := app.HandleCreateConnection(params)
+	if err != nil {
+		t.Fatalf("HandleCreateConnection failed: %v", err)
+	}
+
+	entries := app.HostList().All()
+	var found *hosts.Entry
+	for _, e := range entries {
+		if e.Alias == "vw-server" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("vw-server not found in host list")
+	}
+	if found.Source == "vw:vw" {
+		t.Errorf("Source should NOT be 'vw:vw', got %q", found.Source)
+	}
+	if found.Source != "vw" {
+		t.Errorf("Source = %q, want 'vw'", found.Source)
 	}
 }
 
