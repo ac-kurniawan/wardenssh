@@ -248,3 +248,115 @@ func TestClientSyncAllUpdatesSources(t *testing.T) {
 		t.Fatalf("expected 1 item per source after SyncAll, got %d and %d", len(items1), len(items2))
 	}
 }
+
+// TestSourceItemsIncludesSSHLoginItems: login items are launchable only when
+// they have a populated host AND a type==SSH (case-insensitive) custom field.
+func TestSourceItemsIncludesSSHLoginItems(t *testing.T) {
+	sess := fakeSession(t)
+	cf := config.Default().CustomFields
+
+	mkLogin := func(id, name, u, p string, fields []vaultclient.CustomField) vaultclient.Cipher {
+		return vaultclient.Cipher{
+			ID:   id,
+			Name: enc(t, sess, name),
+			Type: 1,
+			Login: &vaultclient.Login{
+				Username: enc(t, sess, u),
+				Password: enc(t, sess, p),
+			},
+			Fields: fields,
+		}
+	}
+
+	ciphers := []vaultclient.Cipher{
+		// login with type==SSH + host -> included, user from login.username
+		mkLogin("1", "prod-db", "admin", "s3cret", []vaultclient.CustomField{
+			{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.9"), Type: 0},
+			{Name: enc(t, sess, "type"), Value: enc(t, sess, "SSH"), Type: 0},
+		}),
+		// login with type != SSH -> excluded
+		mkLogin("2", "web-ui", "u", "p", []vaultclient.CustomField{
+			{Name: enc(t, sess, "host"), Value: enc(t, sess, "web.internal"), Type: 0},
+			{Name: enc(t, sess, "type"), Value: enc(t, sess, "HTTPS"), Type: 0},
+		}),
+		// login with no type field -> excluded
+		mkLogin("3", "ftp-box", "u", "p", []vaultclient.CustomField{
+			{Name: enc(t, sess, "host"), Value: enc(t, sess, "ftp.internal"), Type: 0},
+		}),
+		// login without host -> excluded even with type=ssh
+		mkLogin("4", "no-host", "u", "p", []vaultclient.CustomField{
+			{Name: enc(t, sess, "type"), Value: enc(t, sess, "ssh"), Type: 0},
+		}),
+	}
+
+	src := vaultadapter.NewSource("vw:personal", sess, ciphers, cf)
+	items, err := src.Items()
+	if err != nil {
+		t.Fatalf("Items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (only prod-db qualifies)", len(items))
+	}
+	it := items[0]
+	if it.Kind != "login" {
+		t.Errorf("Kind = %q, want login", it.Kind)
+	}
+	if it.Name != "prod-db" || it.HostName != "10.0.0.9" || it.User != "admin" {
+		t.Errorf("item = %+v", it)
+	}
+	// credentials stay encrypted (lazy decrypt at connect).
+	if it.EncUsername == "admin" {
+		t.Error("EncUsername is plaintext — should be the encrypted form")
+	}
+}
+
+// TestSourceItemsSSHLoginTypeCaseInsensitive: type value matches case-insensitively.
+func TestSourceItemsSSHLoginTypeCaseInsensitive(t *testing.T) {
+	sess := fakeSession(t)
+	cf := config.Default().CustomFields
+	ci := vaultclient.Cipher{
+		ID:    "1",
+		Name:  enc(t, sess, "h"),
+		Type:  1,
+		Login: &vaultclient.Login{Username: enc(t, sess, "u"), Password: enc(t, sess, "p")},
+		Fields: []vaultclient.CustomField{
+			{Name: enc(t, sess, "host"), Value: enc(t, sess, "1.2.3.4"), Type: 0},
+			{Name: enc(t, sess, "type"), Value: enc(t, sess, "ssh"), Type: 0},
+		},
+	}
+	items, err := vaultadapter.NewSource("vw:personal", sess, []vaultclient.Cipher{ci}, cf).Items()
+	if err != nil {
+		t.Fatalf("Items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("lowercase 'ssh' type should match, got %d items", len(items))
+	}
+}
+
+// TestSourceDecryptLogin: lazy decrypt returns the original username+password.
+func TestSourceDecryptLogin(t *testing.T) {
+	sess := fakeSession(t)
+	cf := config.Default().CustomFields
+	ci := vaultclient.Cipher{
+		ID:    "1",
+		Name:  enc(t, sess, "prod-db"),
+		Type:  1,
+		Login: &vaultclient.Login{Username: enc(t, sess, "admin"), Password: enc(t, sess, "s3cret")},
+		Fields: []vaultclient.CustomField{
+			{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.9"), Type: 0},
+			{Name: enc(t, sess, "type"), Value: enc(t, sess, "SSH"), Type: 0},
+		},
+	}
+	src := vaultadapter.NewSource("vw:personal", sess, []vaultclient.Cipher{ci}, cf)
+	items, _ := src.Items()
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	user, pass, err := src.DecryptLogin(items[0])
+	if err != nil {
+		t.Fatalf("DecryptLogin: %v", err)
+	}
+	if string(user) != "admin" || string(pass) != "s3cret" {
+		t.Errorf("user=%q pass=%q, want admin/s3cret", user, pass)
+	}
+}

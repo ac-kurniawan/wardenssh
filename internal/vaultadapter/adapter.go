@@ -7,6 +7,7 @@ package vaultadapter
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
@@ -32,15 +33,12 @@ func NewSource(name string, sess *vaultclient.Session, ciphers []vaultclient.Cip
 func (s *Source) Name() string { return s.name }
 
 // Items satisfies vault.Source: returns SSH-Key items with a populated 'host'
-// custom field (Q32/B). Item names + custom fields are decrypted eagerly; the
-// private key stays encrypted (lazy decrypt, Q8/C).
+// custom field (Q32/B) plus Login items tagged type==SSH. Item names + custom
+// fields are decrypted eagerly; the private key / login credentials stay
+// encrypted (lazy decrypt, Q8/C).
 func (s *Source) Items() ([]vault.Item, error) {
 	var out []vault.Item
 	for _, ci := range s.ciphers {
-		if ci.SshKey == nil || ci.SshKey.PrivateKey == "" {
-			continue
-		}
-
 		// Decrypt the item name (display label, Q30/A).
 		nameBytes, err := s.session.DecryptField(ci.Name)
 		if err != nil {
@@ -55,21 +53,59 @@ func (s *Source) Items() ([]vault.Item, error) {
 			continue
 		}
 
-		item := vault.Item{
-			ID:            ci.ID,
-			Name:          string(nameBytes),
-			HostName:      cf.HostName,
-			User:          cf.User,
-			Port:          cf.Port,
-			ProxyJump:     cf.ProxyJump,
-			EncPrivateKey: ci.SshKey.PrivateKey,
+		switch {
+		case ci.Login != nil && strings.EqualFold(cf.Type, "ssh"):
+			// Login item tagged type=SSH -> password-credential host.
+			// Username is decrypted for display (User); the credentials stay
+			// encrypted for lazy decrypt at connect time (Q8/C pattern).
+			uname, _ := s.session.DecryptField(ci.Login.Username)
+			item := vault.Item{
+				ID:          ci.ID,
+				Name:        string(nameBytes),
+				Kind:        "login",
+				HostName:    cf.HostName,
+				User:        string(uname),
+				Port:        cf.Port,
+				ProxyJump:   cf.ProxyJump,
+				EncUsername: ci.Login.Username,
+				EncPassword: ci.Login.Password,
+			}
+			if item.User == "" {
+				item.User = cf.User
+			}
+			out = append(out, item)
+		case ci.SshKey != nil && ci.SshKey.PrivateKey != "":
+			// SSH-Key item (existing path).
+			item := vault.Item{
+				ID:            ci.ID,
+				Name:          string(nameBytes),
+				HostName:      cf.HostName,
+				User:          cf.User,
+				Port:          cf.Port,
+				ProxyJump:     cf.ProxyJump,
+				EncPrivateKey: ci.SshKey.PrivateKey,
+			}
+			if ci.SshKey.Passphrase != "" {
+				item.EncPassphrase = ci.SshKey.Passphrase
+			}
+			out = append(out, item)
 		}
-		if ci.SshKey.Passphrase != "" {
-			item.EncPassphrase = ci.SshKey.Passphrase
-		}
-		out = append(out, item)
 	}
 	return out, nil
+}
+
+// DecryptLogin satisfies vault.Source: lazily decrypts the item's native
+// login username + password (Q8/C pattern). Called at connect time.
+func (s *Source) DecryptLogin(item vault.Item) ([]byte, []byte, error) {
+	username, err := s.session.DecryptField(item.EncUsername)
+	if err != nil {
+		return nil, nil, fmt.Errorf("vaultadapter: decrypt login username: %w", err)
+	}
+	password, err := s.session.DecryptField(item.EncPassword)
+	if err != nil {
+		return nil, nil, fmt.Errorf("vaultadapter: decrypt login password: %w", err)
+	}
+	return username, password, nil
 }
 
 // DecryptPrivateKey satisfies vault.Source: lazily decrypts the item's private
@@ -104,6 +140,7 @@ type customFieldValues struct {
 	User      string
 	Port      string
 	ProxyJump string
+	Type      string
 }
 
 // readCustomFields decrypts the cipher's custom fields and maps them to
@@ -130,6 +167,7 @@ func readCustomFields(sess *vaultclient.Session, fields []vaultclient.CustomFiel
 	v.User = decrypted[cf.User]
 	v.Port = decrypted[cf.Port]
 	v.ProxyJump = decrypted[cf.ProxyJump]
+	v.Type = decrypted[cf.Type]
 	return v
 }
 
