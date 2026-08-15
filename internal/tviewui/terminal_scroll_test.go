@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/blacknon/tvxterm"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -57,7 +56,7 @@ func (b *testBackend) Writes() [][]byte {
 
 // waitScrollback polls until the view's local scrollback is non-empty, which
 // also guarantees the view has fully processed the fed output.
-func waitScrollback(t *testing.T, view *tvxterm.View) {
+func waitScrollback(t *testing.T, view *terminalView) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -74,6 +73,32 @@ func waitScrollback(t *testing.T, view *tvxterm.View) {
 // (vim/tmux/less/htop) would.
 const mouseEnable = "\x1b[?1000h\x1b[?1006h"
 
+// fedView builds a terminal view with the WardenSSH interaction wiring, a rect
+// (inner area 10x3), and fed output. Exactly 26 lines are written so the first
+// three lines sit in scrollback and the visible rows start at
+// "abcdefghij", "klmnopqrst", "uvwxyzabcd". It returns the view and the
+// recording backend.
+func fedView(t *testing.T) (*terminalView, *testBackend) {
+	t.Helper()
+	view := newTerminalView(nil, "host-a")
+	view.SetRect(0, 0, 12, 5)
+
+	payload := []byte(mouseEnable)
+	for i := 0; i < 3; i++ {
+		payload = append(payload, []byte("xxxxxxxxxx\n")...)
+	}
+	payload = append(payload, []byte("abcdefghij\n")...)
+	payload = append(payload, []byte("klmnopqrst\n")...)
+	payload = append(payload, []byte("uvwxyzabcd\n")...)
+	for i := 0; i < 20; i++ {
+		payload = append(payload, []byte("yyyyyyyyyy\n")...)
+	}
+	backend := newTestBackend(payload)
+	view.Attach(backend)
+	waitScrollback(t, view)
+	return view, backend
+}
+
 // TestTerminalWheelScrollsLocalScrollback: the right pane (terminal) must be
 // scrollable with the mouse wheel — wheel-up/down scrolls the pane's own
 // scrollback. Wheel events must never be forwarded to the remote app as
@@ -81,6 +106,7 @@ const mouseEnable = "\x1b[?1000h\x1b[?1006h"
 // navigation ("acts like arrow up and down").
 func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
 	view := newTerminalView(nil, "host-a")
+	view.SetRect(0, 0, 12, 5)
 	defer view.Close()
 
 	payload := []byte(mouseEnable)
@@ -94,7 +120,7 @@ func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
 	handler := view.MouseHandler()
 	setFocus := func(p tview.Primitive) {}
 
-	consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 5, 0, tcell.ModNone), setFocus)
+	consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
 	if !consumed {
 		t.Fatal("expected wheel-up over the terminal to be consumed")
 	}
@@ -109,7 +135,7 @@ func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
 		t.Errorf("wheel must not be forwarded to the remote as a mouse sequence; got %d writes: %q", len(writes), writes)
 	}
 
-	consumed, _ = handler(tview.MouseScrollDown, tcell.NewEventMouse(5, 5, 0, tcell.ModNone), setFocus)
+	consumed, _ = handler(tview.MouseScrollDown, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
 	if !consumed {
 		t.Fatal("expected wheel-down over the terminal to be consumed")
 	}
@@ -119,29 +145,69 @@ func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
 	}
 }
 
-// TestTerminalMouseClicksStillForwardedToRemote: only wheel scrolling is
-// captured for local scrollback. Ordinary clicks must still reach the remote
-// app (SGR mouse reports) so apps like tmux/vim keep working with the mouse.
-func TestTerminalMouseClicksStillForwardedToRemote(t *testing.T) {
-	view := newTerminalView(nil, "host-a")
-	view.SetRect(0, 0, 10, 5)
+// TestTerminalDragSelectsTextAndCopies: primary-button click-hold-drag over the
+// terminal selects text locally, highlights it, and copies it to the OS
+// clipboard on release. The drag must never be forwarded to the remote app as
+// mouse-reporting sequences.
+func TestTerminalDragSelectsTextAndCopies(t *testing.T) {
+	view, backend := fedView(t)
 	defer view.Close()
 
-	payload := []byte(mouseEnable)
-	for i := 0; i < 30; i++ {
-		payload = append(payload, []byte("line\n")...)
-	}
-	backend := newTestBackend(payload)
-	view.Attach(backend)
-	waitScrollback(t, view)
+	var copied string
+	origCopy := copySelection
+	copySelection = func(text string) error { copied = text; return nil }
+	defer func() { copySelection = origCopy }()
 
 	handler := view.MouseHandler()
-	consumed, _ := handler(tview.MouseLeftDown, tcell.NewEventMouse(1, 1, tcell.Button1, tcell.ModNone), func(p tview.Primitive) {})
+	setFocus := func(p tview.Primitive) {}
+
+	consumed, _ := handler(tview.MouseLeftDown, tcell.NewEventMouse(1, 1, tcell.Button1, tcell.ModNone), setFocus)
 	if !consumed {
-		t.Fatal("expected left-click over the terminal to be consumed")
+		t.Fatal("expected left-down to be consumed")
 	}
-	writes := backend.Writes()
-	if len(writes) != 1 || string(writes[0]) != "\x1b[<0;1;1M" {
-		t.Errorf("expected left-click forwarded as SGR report, got %q", writes)
+	consumed, _ = handler(tview.MouseMove, tcell.NewEventMouse(5, 2, tcell.Button1, tcell.ModNone), setFocus)
+	if !consumed {
+		t.Fatal("expected drag move to be consumed")
+	}
+	consumed, _ = handler(tview.MouseLeftUp, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
+	if !consumed {
+		t.Fatal("expected left-up to be consumed")
+	}
+
+	if !view.HasSelection() {
+		t.Fatal("expected a selection to remain highlighted after drag")
+	}
+	want := "abcdefghij\nklmno"
+	if got := view.SelectedText(); got != want {
+		t.Errorf("SelectedText() = %q, want %q", got, want)
+	}
+	if copied != want {
+		t.Errorf("clipboard copy = %q, want %q", copied, want)
+	}
+	if writes := backend.Writes(); len(writes) != 0 {
+		t.Errorf("drag must not be forwarded to the remote; got %d writes: %q", len(writes), writes)
+	}
+}
+
+// TestTerminalClickWithoutDragClearsSelection: a plain click (no drag) must
+// clear any existing selection instead of keeping a zero-length one.
+func TestTerminalClickWithoutDragClearsSelection(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	if !view.StartSelection(1, 1) || !view.UpdateSelection(5, 2) {
+		t.Fatal("precondition: failed to create a selection")
+	}
+	if !view.HasSelection() {
+		t.Fatal("precondition: expected an active selection")
+	}
+
+	handler := view.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+	handler(tview.MouseLeftDown, tcell.NewEventMouse(2, 2, tcell.Button1, tcell.ModNone), setFocus)
+	handler(tview.MouseLeftUp, tcell.NewEventMouse(2, 2, 0, tcell.ModNone), setFocus)
+
+	if view.HasSelection() {
+		t.Error("expected a plain click to clear the selection")
 	}
 }

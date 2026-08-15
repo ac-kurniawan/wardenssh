@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	"github.com/blacknon/tvxterm"
-	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
@@ -24,7 +23,7 @@ type terminalSession struct {
 	key     string
 	alias   string
 	source  string
-	view    *tvxterm.View
+	view    tview.Primitive
 	backend *PtyBackend
 }
 
@@ -43,31 +42,6 @@ type TerminalPane struct {
 	order       []string // insertion order, for "most recent" selection
 	active      string   // key of the displayed session
 	testRunning bool
-}
-
-// newTerminalView builds a tvxterm.View wired for the WardenSSH terminal pane:
-// a visible scrollbar and mouse-wheel scrolling of the local scrollback. Wheel
-// events are captured and converted to local scrollback scrolling so they are
-// never forwarded to the remote app as mouse-reporting sequences (the remote
-// interprets wheel-up/down as arrow-key navigation). Clicks still pass through
-// to the remote when it enables mouse reporting, and keyboard PgUp/PgDn remain
-// forwarded, so vim/tmux/less keep working.
-func newTerminalView(app *tview.Application, title string) *tvxterm.View {
-	term := tvxterm.New(app)
-	term.SetBorder(true).SetTitle(fmt.Sprintf(" %s ", title))
-	term.SetScrollbar(true)
-	term.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
-		switch action {
-		case tview.MouseScrollUp:
-			term.ScrollbackUp(3)
-			return tview.MouseConsumed, nil
-		case tview.MouseScrollDown:
-			term.ScrollbackDown(3)
-			return tview.MouseConsumed, nil
-		}
-		return action, event
-	})
-	return term
 }
 
 // NewTerminalPane creates the terminal pane. The app reference is used for
