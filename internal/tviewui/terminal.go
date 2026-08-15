@@ -117,6 +117,33 @@ func (p *TerminalPane) SetSessionForTest(key, alias, source string) {
 	p.mu.Unlock()
 }
 
+// SetSessionViewForTest attaches a terminal view to an already registered
+// session (tests only; mirrors SetSessionForTest).
+func (p *TerminalPane) SetSessionViewForTest(key string, view tview.Primitive) {
+	p.mu.Lock()
+	if s, ok := p.sessions[key]; ok {
+		s.view = view
+	}
+	p.mu.Unlock()
+}
+
+// CopyActiveSelection copies the displayed session's text selection to the
+// clipboard and clears it, reporting whether a selection was present. Called
+// from the UI thread (e.g. Ctrl+C in the terminal pane).
+func (p *TerminalPane) CopyActiveSelection() bool {
+	p.mu.Lock()
+	s := p.sessions[p.active]
+	p.mu.Unlock()
+	if s == nil {
+		return false
+	}
+	tv, ok := s.view.(*terminalView)
+	if !ok {
+		return false
+	}
+	return tv.CopySelection()
+}
+
 // StartSSH builds an ssh exec.Cmd from argv+env and starts a new session. The
 // onExit callback is invoked on the backend read-loop goroutine when the ssh
 // process exits; UI updates must be marshaled (QueueUpdateDraw) by the caller.

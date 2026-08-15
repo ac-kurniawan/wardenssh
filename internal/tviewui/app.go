@@ -984,8 +984,12 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 			a.FocusHostList()
 			return nil
 		case tcell.KeyCtrlC:
-			// Clone so tview's app-level Ctrl+C quit is bypassed and the
-			// terminal receives SIGINT for the remote shell.
+			// Ctrl+C with an active selection copies it (like a terminal
+			// emulator). Otherwise clone so tview's built-in Ctrl+C quit is
+			// bypassed and the terminal receives SIGINT for the remote shell.
+			if a.termPane.CopyActiveSelection() {
+				return nil
+			}
 			return tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone)
 		default:
 			// Forward to the terminal.

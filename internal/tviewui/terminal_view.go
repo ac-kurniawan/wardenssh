@@ -126,6 +126,19 @@ func (s *terminalView) finishSelection() {
 	}
 }
 
+// CopySelection copies the current local text selection to the OS clipboard
+// and clears it, reporting whether a selection was present.
+func (s *terminalView) CopySelection() bool {
+	if !s.HasSelection() {
+		return false
+	}
+	if text := s.SelectedText(); text != "" {
+		_ = copySelection(text)
+	}
+	s.ClearSelection()
+	return true
+}
+
 // copySelection writes selected terminal text to the OS clipboard. It is a
 // package variable so tests can capture what would be copied.
 var copySelection = func(text string) error {
