@@ -76,6 +76,9 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 		deps:     deps,
 		vaults:   vaults,
 	}
+	// Mouse is required for the terminal pane's scrollback scrolling (wheel)
+	// and for standard mouse navigation (click to focus, wheel to scroll).
+	a.app.EnableMouse(true)
 
 	// Build panes.
 	a.hostPane = NewHostListPane(hostList)
