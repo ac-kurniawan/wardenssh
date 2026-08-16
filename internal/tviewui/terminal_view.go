@@ -63,32 +63,40 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 				s.dragging = false
 				s.finishSelection()
 				return true, nil
-			case tview.MouseScrollUp:
-				setFocus(s)
-				s.ScrollbackUp(3)
-				return true, s
-			case tview.MouseScrollDown:
-				setFocus(s)
-				s.ScrollbackDown(3)
-				return true, s
-			}
-			return orig(action, event, setFocus)
-		}
-
-		x, y := event.Position()
-		if !s.InRect(x, y) {
-			return orig(action, event, setFocus)
-		}
-
-		switch action {
 		case tview.MouseScrollUp:
-			setFocus(s)
+			if !s.HasFocus() {
+				setFocus(s)
+			}
 			s.ScrollbackUp(3)
-			return true, nil
+			return true, s
 		case tview.MouseScrollDown:
-			setFocus(s)
+			if !s.HasFocus() {
+				setFocus(s)
+			}
 			s.ScrollbackDown(3)
-			return true, nil
+			return true, s
+		}
+		return orig(action, event, setFocus)
+	}
+
+	x, y := event.Position()
+	if !s.InRect(x, y) {
+		return orig(action, event, setFocus)
+	}
+
+	switch action {
+	case tview.MouseScrollUp:
+		if !s.HasFocus() {
+			setFocus(s)
+		}
+		s.ScrollbackUp(3)
+		return true, nil
+	case tview.MouseScrollDown:
+		if !s.HasFocus() {
+			setFocus(s)
+		}
+		s.ScrollbackDown(3)
+		return true, nil
 		case tview.MouseLeftDown:
 			if s.onScrollbarColumn(x, y) {
 				// Let the embedded handler drive the scrollbar (jump/drag).

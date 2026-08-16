@@ -145,6 +145,63 @@ func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
 	}
 }
 
+// TestTerminalWheelAccumulatesWithFocusReporting: repeated wheel-up events must
+// keep accumulating the local scroll offset. A remote app that has enabled
+// focus reporting (DEC 1004, used by vim/tmux/less) triggers a focus-in report
+// whenever the view is (re)focused. Because setFocus(s) on every wheel event
+// re-invokes Focus() -> reportFocus -> sendInput -> resetScrollback, the offset
+// was reset to 0 before ScrollbackUp could accumulate — only the last +3 ever
+// stuck, so scrolling was capped at one step. The handler must not re-focus an
+// already-focused view.
+func TestTerminalWheelAccumulatesWithFocusReporting(t *testing.T) {
+	view := newTerminalView(nil, "host-a")
+	view.SetRect(0, 0, 12, 5)
+	defer view.Close()
+
+	// Enable focus reporting the way vim/tmux would.
+	payload := []byte("\x1b[?1004h")
+	for i := 0; i < 60; i++ {
+		payload = append(payload, []byte("line of output\n")...)
+	}
+	backend := newTestBackend(payload)
+	view.Attach(backend)
+	waitScrollback(t, view)
+
+	handler := view.MouseHandler()
+	// Realistic setFocus: simulate tview.Application.SetFocus by invoking the
+	// primitive's Focus() -> reportFocus path, which fires a focus-in report to
+	// the backend and (critically) calls resetScrollback via sendInput.
+	setFocus := func(p tview.Primitive) {
+		if p == nil {
+			return
+		}
+		if tv, ok := p.(*terminalView); ok {
+			tv.Focus(func(q tview.Primitive) {})
+		}
+	}
+
+	// First scroll establishes an offset.
+	handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
+	off1, _ := view.ScrollbackStatus()
+	if off1 <= 0 {
+		t.Fatalf("expected first wheel-up to set offset >0, got %d", off1)
+	}
+
+	// Second scroll must accumulate, not reset+set to one step.
+	handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
+	off2, _ := view.ScrollbackStatus()
+	if off2 <= off1 {
+		t.Fatalf("expected second wheel-up to accumulate offset %d -> >%d, got %d", off1, off1, off2)
+	}
+
+	// Third scroll keeps going.
+	handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
+	off3, _ := view.ScrollbackStatus()
+	if off3 <= off2 {
+		t.Fatalf("expected third wheel-up to accumulate offset %d -> >%d, got %d", off2, off2, off3)
+	}
+}
+
 // TestTerminalDragSelectsTextAndCopies: primary-button click-hold-drag over the
 // terminal selects text locally, highlights it, and copies it to the OS
 // clipboard on release. The drag must never be forwarded to the remote app as
