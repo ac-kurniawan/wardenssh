@@ -70,6 +70,9 @@ type SetupModal struct {
 	password string
 	errMsg   string
 
+	serverField   *tview.InputField
+	usernameField *tview.InputField
+
 	idx       int
 	done      bool
 	loggingIn bool
@@ -103,7 +106,7 @@ func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List
 	m.buildForm()
 	m.modal = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(nil, 0, 1, false).
-		AddItem(m.form, 9, 0, true).
+		AddItem(m.form, 11, 0, true).
 		AddItem(nil, 0, 1, false)
 	return m
 }
@@ -111,6 +114,23 @@ func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List
 func (m *SetupModal) buildForm() {
 	m.form = tview.NewForm()
 	m.updateTitle()
+
+	// Read-only context fields so the user can confirm WHICH vault they are
+	// unlocking before typing a master password. Disabled = non-focusable.
+	m.serverField = tview.NewInputField().
+		SetLabel("Server:").
+		SetFieldWidth(0)
+	m.serverField.SetDisabled(true)
+	m.form.AddFormItem(m.serverField)
+
+	m.usernameField = tview.NewInputField().
+		SetLabel("User:").
+		SetFieldWidth(0)
+	m.usernameField.SetDisabled(true)
+	m.form.AddFormItem(m.usernameField)
+
+	m.updateContextFields()
+
 	m.form.AddPasswordField("Password:", "", 40, '*', func(text string) {
 		m.password = text
 	})
@@ -146,6 +166,37 @@ func (m *SetupModal) updateTitle() {
 	} else {
 		m.form.SetTitle(fmt.Sprintf(" Unlock Vault: %s ", prompt))
 	}
+}
+
+// updateContextFields refreshes the read-only Server and User fields to the
+// current vault. Called on initial build and whenever idx advances.
+func (m *SetupModal) updateContextFields() {
+	if m.idx >= len(m.vaults) {
+		return
+	}
+	v := m.vaults[m.idx]
+	if m.serverField != nil {
+		m.serverField.SetText(v.Server)
+	}
+	if m.usernameField != nil {
+		m.usernameField.SetText(v.Email)
+	}
+}
+
+// ServerField returns the server URL shown for the current vault (for tests).
+func (m *SetupModal) ServerField() string {
+	if m.serverField == nil {
+		return ""
+	}
+	return m.serverField.GetText()
+}
+
+// UsernameField returns the username (email) shown for the current vault (for tests).
+func (m *SetupModal) UsernameField() string {
+	if m.usernameField == nil {
+		return ""
+	}
+	return m.usernameField.GetText()
 }
 
 // Primitive returns the tview primitive for layout embedding.
@@ -233,6 +284,7 @@ func (m *SetupModal) Submit() {
 		m.idx++
 		m.password = ""
 		m.updateTitle()
+		m.updateContextFields()
 		m.mu.Unlock()
 		m.checkDone()
 	}()
@@ -245,6 +297,7 @@ func (m *SetupModal) SkipCurrent() {
 	m.password = ""
 	m.errMsg = ""
 	m.updateTitle()
+	m.updateContextFields()
 	m.mu.Unlock()
 	m.checkDone()
 }

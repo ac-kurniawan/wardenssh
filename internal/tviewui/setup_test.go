@@ -40,6 +40,49 @@ func TestSetupModalInitialState(t *testing.T) {
 	}
 }
 
+// TestSetupModalShowsServerAndUsername: the vault unlock modal must show the
+// vault server URL and username (email) in the form body — not just in the
+// title — so the user can confirm WHICH vault they are unlocking before typing
+// a master password. The fields are read-only (display-only).
+func TestSetupModalShowsServerAndUsername(t *testing.T) {
+	hl := hosts.NewList(nil)
+	m := tviewui.NewSetupModal(sampleVaults(), config.CustomFields{}, hl)
+
+	if got := m.ServerField(); got != "https://vw.example.com" {
+		t.Errorf("ServerField() = %q, want https://vw.example.com", got)
+	}
+	if got := m.UsernameField(); got != "user@example.com" {
+		t.Errorf("UsernameField() = %q, want user@example.com", got)
+	}
+}
+
+// TestSetupModalServerUsernameUpdateOnVaultAdvance: when skipping/advancing to
+// the next vault, the server and username fields must update to the new vault.
+func TestSetupModalServerUsernameUpdateOnVaultAdvance(t *testing.T) {
+	vaults := []config.Vault{
+		{Name: "vw1", Server: "https://vw1.example.com", Email: "u1@e.com"},
+		{Name: "vw2", Server: "https://vw2.example.com", Email: "u2@e.com"},
+	}
+	hl := hosts.NewList(nil)
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl)
+
+	if got := m.ServerField(); got != "https://vw1.example.com" {
+		t.Fatalf("initial ServerField() = %q, want https://vw1.example.com", got)
+	}
+	if got := m.UsernameField(); got != "u1@e.com" {
+		t.Fatalf("initial UsernameField() = %q, want u1@e.com", got)
+	}
+
+	m.SkipCurrent()
+
+	if got := m.ServerField(); got != "https://vw2.example.com" {
+		t.Errorf("after skip ServerField() = %q, want https://vw2.example.com", got)
+	}
+	if got := m.UsernameField(); got != "u2@e.com" {
+		t.Errorf("after skip UsernameField() = %q, want u2@e.com", got)
+	}
+}
+
 func TestSetupModalTypingBuildsPassword(t *testing.T) {
 	hl := hosts.NewList(nil)
 	m := tviewui.NewSetupModal(sampleVaults(), config.CustomFields{}, hl)
