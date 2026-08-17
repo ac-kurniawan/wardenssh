@@ -61,6 +61,7 @@ type App struct {
 	inDelete      bool
 	sshConfigPath string
 	termFocused   bool // focus is on the terminal pane (vs. the host list)
+	pasteEnabled  bool // bracketed paste is enabled on the tview app
 	syncStarted   bool
 	syncTicker    *time.Ticker
 	stopSync      chan struct{}
@@ -79,6 +80,14 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	// Mouse is required for the terminal pane's scrollback scrolling (wheel)
 	// and for standard mouse navigation (click to focus, wheel to scroll).
 	a.app.EnableMouse(true)
+
+	// Bracketed paste must be enabled so pasted text (e.g. formatted JSON) is
+	// delivered as ONE block to the focused terminal view instead of as
+	// per-character key events. Without it, each pasted newline re-triggers
+	// autoindent in vim/bash readline and the indentation compounds. See
+	// TerminalPane's PasteHandler wiring.
+	a.app.EnablePaste(true)
+	a.pasteEnabled = true
 
 	// Build panes.
 	a.hostPane = NewHostListPane(hostList)
@@ -188,6 +197,13 @@ func (a *App) FocusedPane() string {
 		return "terminal"
 	}
 	return "host"
+}
+
+// PasteEnabled reports whether the app enabled bracketed paste (so multi-line
+// pastes are delivered as a single block to the terminal instead of per-char
+// key events). Exported for tests.
+func (a *App) PasteEnabled() bool {
+	return a.pasteEnabled
 }
 
 // InSetup reports whether the setup modal is active.
@@ -957,11 +973,13 @@ func (a *App) showHostListPane() {
 // the focused widget sees the event, so this handler decides what the app owns
 // vs. what gets forwarded to the embedded terminal.
 //
-//   - Terminal pane focused (session running): only Ctrl+B and Escape are app
-//     keys (move focus to the host list; the session keeps running). Every
-//     other key — including 'q', Ctrl+C, and letter keys — is forwarded to the
-//     terminal. Ctrl+C is cloned so tview's built-in "Ctrl+C stops the app"
-//     (application.go) does not fire; the remote shell receives SIGINT.
+//   - Terminal pane focused (session running): only Ctrl+B and Ctrl+C are app
+//     keys. Ctrl+B moves focus to the host list (the session keeps running).
+//     Ctrl+C copies an active selection, otherwise it is cloned so tview's
+//     built-in "Ctrl+C stops the app" (application.go) does not fire and the
+//     remote shell receives SIGINT. Every other key — including 'q', ESC, and
+//     letter keys — is forwarded to the terminal, so apps like vim/less
+//     receive their keys (ESC exits insert mode instead of stealing focus).
 //   - Host list focused: Escape (with empty filter) / 'q' / Ctrl+C open the
 //     quit confirmation modal (Q31/C). Escape with a non-empty filter clears
 //     the filter instead. Ctrl+B moves focus to the terminal when a session
@@ -976,10 +994,6 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 	// Terminal pane focused.
 	if a.termFocused && a.termPane.IsRunning() {
 		switch event.Key() {
-		case tcell.KeyEscape:
-			// "Move left" — back to the host list; session keeps running.
-			a.FocusHostList()
-			return nil
 		case tcell.KeyCtrlB:
 			a.FocusHostList()
 			return nil
@@ -1025,4 +1039,3 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 	}
 	return event
 }
-

@@ -21,10 +21,13 @@ func TestFooterSwitchesToTerminalMode(t *testing.T) {
 	f := tviewui.NewFooter()
 	f.SetMode("terminal")
 	text := f.Text()
-	for _, want := range []string{"Ctrl+B", "Ctrl+C", "Esc"} {
+	for _, want := range []string{"Ctrl+B", "Ctrl+C"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("terminal-mode footer %q missing %q", text, want)
 		}
+	}
+	if strings.Contains(text, "Esc list") {
+		t.Errorf("terminal-mode footer %q must not advertise Esc as move-left (ESC goes to the terminal)", text)
 	}
 }
 

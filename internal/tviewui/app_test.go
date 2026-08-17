@@ -66,6 +66,19 @@ func TestAppQuitWithNoLiveSessions(t *testing.T) {
 	}
 }
 
+// TestAppEnablesPaste: pasting multi-line text into the embedded terminal
+// (e.g. formatted JSON/YAML) must arrive as one bracketed-paste block, not as
+// per-character key events. That requires the tview app to enable paste events
+// (which makes the host terminal wrap pastes in \x1b[200~...\x1b[201~ and makes
+// tview deliver them as a single string to the focused terminal view).
+func TestAppEnablesPaste(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	if !app.PasteEnabled() {
+		t.Fatal("expected the app to enable bracketed paste for the terminal pane")
+	}
+}
+
 // TestAppEscAtHomeShowsQuitModal: pressing Escape in the host list (home)
 // must open the quit confirmation modal, not quit directly.
 func TestAppEscAtHomeShowsQuitModal(t *testing.T) {
@@ -168,7 +181,7 @@ func TestAppStartBackgroundSync(t *testing.T) {
 type failingVaultClient struct{}
 
 func (f *failingVaultClient) Sources() []vault.Source { return nil }
-func (f *failingVaultClient) Sync() error            { return fmt.Errorf("network connection failed") }
+func (f *failingVaultClient) Sync() error             { return fmt.Errorf("network connection failed") }
 
 func TestAppTriggerSyncOfflineStatusOnSyncError(t *testing.T) {
 	hl := sampleHostList()
@@ -836,9 +849,9 @@ func TestApp_DeleteConnection_Vault_PurgesSourceCache(t *testing.T) {
 	cf := config.CustomFields{Host: "host", User: "user", Port: "port", ProxyJump: "proxyjump", Type: "type"}
 	src := vaultadapter.NewSource("vw", sess, []vaultclient.Cipher{
 		{
-			ID:   "vault-cipher-777",
-			Name: enc("vault-to-delete"),
-			Type: 5,
+			ID:     "vault-cipher-777",
+			Name:   enc("vault-to-delete"),
+			Type:   5,
 			SshKey: &vaultclient.SshKey{PrivateKey: enc("KEY")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc("host"), Value: enc("5.6.7.8"), Type: 0},
@@ -885,10 +898,3 @@ func TestApp_DeleteConnection_Vault_PurgesSourceCache(t *testing.T) {
 		t.Errorf("expected host list empty after delete, got: %+v", all)
 	}
 }
-
-
-
-
-
-
-

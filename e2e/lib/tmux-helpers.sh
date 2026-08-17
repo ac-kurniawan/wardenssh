@@ -50,6 +50,11 @@ tmux_ctrl_q() {
     tmux send-keys -t "$TMUX_SESSION" C-q
 }
 
+# Send Ctrl+B
+tmux_ctrl_b() {
+    tmux send-keys -t "$TMUX_SESSION" C-b
+}
+
 # Send Ctrl+C
 tmux_ctrl_c() {
     tmux send-keys -t "$TMUX_SESSION" C-c

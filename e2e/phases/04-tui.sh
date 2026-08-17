@@ -48,15 +48,15 @@ echo "  After second Tab:"
 echo "$SCREEN" | head -3 | sed 's/^/    /'
 
 # Connect to test-host (navigate down) to start a live session
-echo "[5/8] Testing connect then Esc..."
+echo "[5/8] Testing connect then Ctrl+B yield..."
 tmux_keys Down  # Move to test-host
 sleep 0.5
 tmux_enter  # Connect
 sleep 3
-tmux_escape  # Return to host list
+tmux_ctrl_b  # Yield back to host list (Esc goes to the terminal now)
 sleep 1
 SCREEN=$(tmux_capture)
-assert_contains "$SCREEN" "test-host" "Esc returns to host list from session" || true
+assert_contains "$SCREEN" "test-host" "Ctrl+B returns to host list from session" || true
 
 # Test quit modal with q (live session exists, so quit modal appears)
 echo "[6/8] Testing quit modal (q)..."

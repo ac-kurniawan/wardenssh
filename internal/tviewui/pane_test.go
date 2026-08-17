@@ -14,11 +14,11 @@ func escEvent() *tcell.EventKey {
 	return tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone)
 }
 
-// TestAppEscInTerminalReturnsToHostList: when the terminal pane is focused,
-// ESC must move focus back to the host list WITHOUT opening the quit modal and
-// WITHOUT stopping the session (the spec's "move left → kembali ke list (sesi
-// tetap jalan)").
-func TestAppEscInTerminalReturnsToHostList(t *testing.T) {
+// TestAppEscInTerminalForwardsToTerminal: when the terminal pane is focused,
+// ESC must be passed through to the terminal (so vim/less receive it), NOT
+// move focus back to the host list. It must also NOT open the quit modal and
+// NOT stop the session.
+func TestAppEscInTerminalForwardsToTerminal(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
 
@@ -30,17 +30,17 @@ func TestAppEscInTerminalReturnsToHostList(t *testing.T) {
 	}
 
 	ev := app.HandleGlobalKey(escEvent())
-	if ev != nil {
-		t.Fatalf("ESC in terminal: event = %v, want nil (consumed by app)", ev)
+	if ev == nil {
+		t.Fatal("ESC in terminal: event = nil, want forwarded to the terminal")
 	}
-	if app.FocusedPane() != "host" {
-		t.Errorf("FocusedPane = %q, want host after ESC in terminal", app.FocusedPane())
+	if app.FocusedPane() != "terminal" {
+		t.Errorf("FocusedPane = %q, want terminal after ESC in terminal", app.FocusedPane())
 	}
 	if app.InQuitModal() {
 		t.Error("ESC in terminal must NOT open the quit modal")
 	}
 	if !app.TerminalPane().IsRunning() {
-		t.Error("session must stay running after ESC in terminal (yield-and-switch)")
+		t.Error("session must stay running after ESC in terminal")
 	}
 }
 
@@ -74,8 +74,9 @@ func TestAppCtrlBTogglesBetweenPanes(t *testing.T) {
 	_ = ev
 }
 
-// TestAppEscInTerminalForwardsOtherKeys: keys other than ESC/Ctrl+B are passed
-// through to the terminal (never intercepted for quit).
+// TestAppEscInTerminalForwardsOtherKeys: keys other than Ctrl+B/Ctrl+C are
+// passed through to the terminal (never intercepted for quit). ESC is one of
+// them — vim/less need it.
 func TestAppEscInTerminalForwardsOtherKeys(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
@@ -90,6 +91,7 @@ func TestAppEscInTerminalForwardsOtherKeys(t *testing.T) {
 		{"enter", tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)},
 		{"up", tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone)},
 		{"x", tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone)},
+		{"esc", escEvent()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := app.HandleGlobalKey(tc.event)

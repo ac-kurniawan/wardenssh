@@ -29,9 +29,9 @@ sleep 3
 SCREEN=$(tmux_capture)
 assert_match "$SCREEN" "wardenssh-test|\\$" "SSH session 1 (file-host) active" || true
 
-# Esc back to host list
+# Ctrl+B back to host list (Esc is forwarded to the terminal)
 echo "[3/8] Returning to host list (yield)..."
-tmux_escape
+tmux_ctrl_b
 sleep 1
 SCREEN=$(tmux_capture)
 assert_contains "$SCREEN" "file-host" "Back to host list" || true
@@ -45,9 +45,9 @@ sleep 3
 SCREEN=$(tmux_capture)
 assert_match "$SCREEN" "wardenssh-test|\\$" "SSH session 2 (test-host) active" || true
 
-# Esc back to host list — both should be live (green dots)
+# Ctrl+B back to host list — both should be live (green dots)
 echo "[5/8] Returning to host list..."
-tmux_escape
+tmux_ctrl_b
 sleep 1
 SCREEN=$(tmux_capture)
 echo "  Host list with both live:"

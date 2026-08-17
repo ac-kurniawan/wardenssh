@@ -173,7 +173,8 @@ To have an SSH Key item from Bitwarden/Vaultwarden appear in your WardenSSH host
 
 | Key / Shortcut | Action |
 | :--- | :--- |
-| `Esc` / `Ctrl+B` | Return focus to the host list (session keeps running) |
+| `Ctrl+B` | Return focus to the host list (session keeps running) |
+| `Esc` | Forwarded to the remote shell (e.g. exits insert mode in vim) |
 | All other keys | Forwarded to the remote shell (including `Ctrl+C` = SIGINT) |
 
 ### Sessions

@@ -28,7 +28,7 @@ func (f *Footer) Primitive() tview.Primitive { return f.view }
 func (f *Footer) SetMode(mode string) {
 	switch mode {
 	case "terminal":
-		f.view.SetText("[gray:black]Ctrl+B list · Ctrl+C SIGINT · Esc list[-]")
+		f.view.SetText("[gray:black]Ctrl+B list · Ctrl+C SIGINT[-]")
 	default:
 		f.view.SetText("[gray:black]Tab scope · Ctrl+N new · Ctrl+D delete · Ctrl+R sync · Enter connect · Esc/q quit[-]")
 	}
