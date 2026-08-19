@@ -104,7 +104,9 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 			}
 			s.dragging = true
 			s.StartSelection(x, y)
-			setFocus(s)
+			if !s.HasFocus() {
+				setFocus(s)
+			}
 			return true, s
 		}
 		return orig(action, event, setFocus)

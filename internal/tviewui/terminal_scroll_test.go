@@ -202,6 +202,57 @@ func TestTerminalWheelAccumulatesWithFocusReporting(t *testing.T) {
 	}
 }
 
+// TestTerminalClickKeepsScrollOffsetWithFocusReporting: clicking into the
+// terminal while scrolled up (e.g. to start selecting scrollback text) must
+// not snap the view back to the bottom. With a remote app that has enabled
+// focus reporting (DEC 1004, used by vim/tmux/less), tview's SetFocus ->
+// Focus() -> reportFocus -> sendInput -> resetScrollback fires on every
+// unguarded setFocus call, wiping the scroll offset — the same mechanism as
+// the wheel-accumulation bug above. MouseLeftDown must not re-focus an
+// already-focused view.
+func TestTerminalClickKeepsScrollOffsetWithFocusReporting(t *testing.T) {
+	view := newTerminalView(nil, "host-a")
+	view.SetRect(0, 0, 12, 5)
+	defer view.Close()
+
+	// Enable focus reporting the way vim/tmux would.
+	payload := []byte("\x1b[?1004h")
+	for i := 0; i < 60; i++ {
+		payload = append(payload, []byte("line of output\n")...)
+	}
+	backend := newTestBackend(payload)
+	view.Attach(backend)
+	waitScrollback(t, view)
+
+	handler := view.MouseHandler()
+	// Realistic setFocus: simulate tview.Application.SetFocus by invoking the
+	// primitive's Focus() -> reportFocus path (see the wheel test above).
+	setFocus := func(p tview.Primitive) {
+		if p == nil {
+			return
+		}
+		if tv, ok := p.(*terminalView); ok {
+			tv.Focus(func(q tview.Primitive) {})
+		}
+	}
+
+	// Scroll up into the scrollback.
+	handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
+	before, _ := view.ScrollbackStatus()
+	if before <= 0 {
+		t.Fatalf("precondition: expected scroll offset >0 after wheel-up, got %d", before)
+	}
+
+	// Plain click (press + release) inside the scrolled view.
+	handler(tview.MouseLeftDown, tcell.NewEventMouse(5, 2, tcell.Button1, tcell.ModNone), setFocus)
+	handler(tview.MouseLeftUp, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
+
+	after, _ := view.ScrollbackStatus()
+	if after != before {
+		t.Fatalf("expected click to preserve scroll offset %d, got %d (snapped to bottom)", before, after)
+	}
+}
+
 // TestTerminalDragSelectsTextAndCopies: primary-button click-hold-drag over the
 // terminal selects text locally, highlights it, and copies it to the OS
 // clipboard on release. The drag must never be forwarded to the remote app as
