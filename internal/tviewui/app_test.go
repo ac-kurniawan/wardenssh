@@ -898,3 +898,275 @@ func TestApp_DeleteConnection_Vault_PurgesSourceCache(t *testing.T) {
 		t.Errorf("expected host list empty after delete, got: %+v", all)
 	}
 }
+
+func TestApp_UpdateConnection_FileTarget(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	initial := `# Top comment
+Host old-box
+    # Inline comment
+    HostName 1.2.3.4
+    User deploy
+    Port 22
+    ForwardAgent yes
+
+Host other-box
+    HostName 9.9.9.9
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0600); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "old-box", HostName: "1.2.3.4", User: "deploy", Port: "22", Source: "file", AuthKind: "key"},
+		{Alias: "other-box", HostName: "9.9.9.9", Source: "file"},
+	})
+
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.SetSSHConfigPathForTest(configPath)
+
+	// Test EditModal lifecycle
+	if app.InEdit() {
+		t.Fatal("expected not in edit modal initially")
+	}
+
+	app.ShowEditModal(hosts.Entry{Alias: "old-box", HostName: "1.2.3.4", User: "deploy", Port: "22", Source: "file", AuthKind: "key"})
+	if !app.InEdit() {
+		t.Fatal("expected to be in edit modal")
+	}
+	if app.EditModal() == nil {
+		t.Fatal("expected non-nil EditModal")
+	}
+
+	params := tviewui.CreateParams{
+		Alias:     "new-box",
+		Target:    "file",
+		HostName:  "1.2.3.99",
+		User:      "admin",
+		Port:      "2222",
+		ProxyJump: "jumpbox",
+		AuthKind:  "key",
+	}
+
+	err := app.HandleUpdateConnection(hosts.Entry{Alias: "old-box", Source: "file", AuthKind: "key"}, params)
+	if err != nil {
+		t.Fatalf("HandleUpdateConnection failed: %v", err)
+	}
+
+	app.CloseEditModal()
+	if app.InEdit() {
+		t.Fatal("expected edit modal closed")
+	}
+
+	// Verify host list replaced old-box with new-box
+	all := app.HostList().All()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries in host list, got %d", len(all))
+	}
+	if all[0].Alias != "new-box" || all[0].HostName != "1.2.3.99" || all[0].User != "admin" || all[0].Port != "2222" || all[0].ProxyJump != "jumpbox" {
+		t.Errorf("unexpected updated entry in host list: %+v", all[0])
+	}
+
+	// Verify config file updated in-place with comments preserved
+	cfgContent, _ := os.ReadFile(configPath)
+	cfgStr := string(cfgContent)
+	if !strings.Contains(cfgStr, "# Top comment") || !strings.Contains(cfgStr, "# Inline comment") || !strings.Contains(cfgStr, "ForwardAgent yes") {
+		t.Errorf("expected comments and ForwardAgent preserved in:\n%s", cfgStr)
+	}
+	if strings.Contains(cfgStr, "Host old-box") || strings.Contains(cfgStr, "1.2.3.4") {
+		t.Errorf("expected old-box and 1.2.3.4 replaced in:\n%s", cfgStr)
+	}
+	if !strings.Contains(cfgStr, "Host new-box") || !strings.Contains(cfgStr, "HostName 1.2.3.99") || !strings.Contains(cfgStr, "Port 2222") {
+		t.Errorf("expected new-box in config:\n%s", cfgStr)
+	}
+}
+
+func TestApp_UpdateConnection_FileTarget_SwitchAuthKind(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	initial := `Host server-a
+    HostName 10.0.0.1
+    IdentityFile ~/.ssh/id_rsa_server_a
+`
+	_ = os.WriteFile(configPath, []byte(initial), 0600)
+
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "server-a", HostName: "10.0.0.1", Source: "file", AuthKind: "key", IdentityFile: "~/.ssh/id_rsa_server_a"},
+	})
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.SetSSHConfigPathForTest(configPath)
+
+	// 1. Switch from key to password -> IdentityFile dropped from config
+	paramsPW := tviewui.CreateParams{
+		Alias:    "server-a",
+		Target:   "file",
+		HostName: "10.0.0.1",
+		AuthKind: "password",
+	}
+	err := app.HandleUpdateConnection(hosts.Entry{Alias: "server-a", Source: "file", AuthKind: "key", IdentityFile: "~/.ssh/id_rsa_server_a"}, paramsPW)
+	if err != nil {
+		t.Fatalf("HandleUpdateConnection key->pw failed: %v", err)
+	}
+
+	cfgContent, _ := os.ReadFile(configPath)
+	if strings.Contains(string(cfgContent), "IdentityFile") {
+		t.Errorf("expected IdentityFile dropped when switching to password auth:\n%s", string(cfgContent))
+	}
+	if app.HostList().All()[0].AuthKind != "password" {
+		t.Errorf("expected AuthKind password, got %q", app.HostList().All()[0].AuthKind)
+	}
+
+	// 2. Switch from password to key -> generates new keypair file and adds IdentityFile
+	paramsKey := tviewui.CreateParams{
+		Alias:    "server-a",
+		Target:   "file",
+		HostName: "10.0.0.1",
+		AuthKind: "key",
+		KeyAlgo:  "ed25519",
+	}
+	err = app.HandleUpdateConnection(hosts.Entry{Alias: "server-a", Source: "file", AuthKind: "password"}, paramsKey)
+	if err != nil {
+		t.Fatalf("HandleUpdateConnection pw->key failed: %v", err)
+	}
+
+	cfgContent2, _ := os.ReadFile(configPath)
+	if !strings.Contains(string(cfgContent2), "IdentityFile") {
+		t.Errorf("expected IdentityFile added when switching to key auth:\n%s", string(cfgContent2))
+	}
+	if app.HostList().All()[0].AuthKind != "key" {
+		t.Errorf("expected AuthKind key, got %q", app.HostList().All()[0].AuthKind)
+	}
+}
+
+func TestApp_UpdateConnection_VaultTarget(t *testing.T) {
+	symKey := bytes.Repeat([]byte{0x03}, 64)
+	sess := &vaultclient.Session{
+		AccessToken: "update-token",
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+	}
+
+	enc := func(plain string) string {
+		s, err := sess.EncryptField(plain)
+		if err != nil {
+			t.Fatalf("EncryptField(%q): %v", plain, err)
+		}
+		return s
+	}
+
+	var putPath string
+	var putAuth string
+	var putCipher vaultclient.Cipher
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers/vault-cipher-999", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "bad method", http.StatusMethodNotAllowed)
+			return
+		}
+		putPath = r.URL.Path
+		putAuth = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&putCipher)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(putCipher)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cf := config.CustomFields{Host: "host", User: "user", Port: "port", ProxyJump: "proxyjump", Type: "type"}
+	src := vaultadapter.NewSource("vw", sess, []vaultclient.Cipher{
+		{
+			ID:     "vault-cipher-999",
+			Name:   enc("vault-orig"),
+			Type:   1,
+			Login:  &vaultclient.Login{Username: enc("olduser"), Password: enc("oldpass")},
+			Fields: []vaultclient.CustomField{
+				{Name: enc("host"), Value: enc("10.0.0.1"), Type: 0},
+				{Name: enc("type"), Value: enc("SSH"), Type: 0},
+				{Name: enc("custom_note"), Value: enc("keep_me"), Type: 0}, // Unmanaged custom field
+			},
+		},
+	}, cf)
+	vc := vaultadapter.NewClient(src)
+
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "vault-orig", HostName: "10.0.0.1", User: "olduser", Source: "vw", AuthKind: "password"},
+	})
+	app := tviewui.New(hl, tviewui.Deps{VaultCli: vc, CustomFields: cf}, []config.Vault{
+		{Name: "vw", Server: srv.URL, Email: "user@example.com"},
+	})
+
+	params := tviewui.CreateParams{
+		Alias:    "vault-renamed",
+		Target:   "vw",
+		HostName: "10.0.0.99",
+		User:     "newuser",
+		Port:     "2200",
+		AuthKind: "password",
+		Password: "newsecretpassword",
+	}
+
+	err := app.HandleUpdateConnection(hosts.Entry{Alias: "vault-orig", HostName: "10.0.0.1", Source: "vw", AuthKind: "password"}, params)
+	if err != nil {
+		t.Fatalf("HandleUpdateConnection vault failed: %v", err)
+	}
+
+	if putPath != "/api/ciphers/vault-cipher-999" {
+		t.Errorf("putPath = %q, want /api/ciphers/vault-cipher-999", putPath)
+	}
+	if putAuth != "Bearer update-token" {
+		t.Errorf("putAuth = %q, want 'Bearer update-token'", putAuth)
+	}
+
+	// Verify decrypted name
+	nameBytes, _ := sess.DecryptField(putCipher.Name)
+	if string(nameBytes) != "vault-renamed" {
+		t.Errorf("decrypted put Name = %q, want 'vault-renamed'", string(nameBytes))
+	}
+
+	// Verify unmanaged custom field was preserved
+	foundCustomNote := false
+	for _, f := range putCipher.Fields {
+		nBytes, _ := sess.DecryptField(f.Name)
+		if string(nBytes) == "custom_note" {
+			vBytes, _ := sess.DecryptField(f.Value)
+			if string(vBytes) == "keep_me" {
+				foundCustomNote = true
+			}
+		}
+	}
+	if !foundCustomNote {
+		t.Errorf("expected unmanaged custom field 'custom_note: keep_me' to be preserved in PUT body")
+	}
+
+	// Verify host list updated
+	all := app.HostList().All()
+	if len(all) != 1 || all[0].Alias != "vault-renamed" || all[0].HostName != "10.0.0.99" || all[0].User != "newuser" || all[0].Port != "2200" {
+		t.Errorf("unexpected updated host list entry: %+v", all)
+	}
+}
+
+func TestApp_UpdateConnection_Refusals(t *testing.T) {
+	hl := hosts.NewList([]hosts.Entry{
+		{Alias: "live-server", HostName: "1.1.1.1", Source: "file", Live: true},
+		{Alias: "*.wildcard", HostName: "2.2.2.2", Source: "file", Wildcard: true},
+	})
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+
+	// Refusal 1: Live connection
+	app.ShowEditModal(hosts.Entry{Alias: "live-server", Source: "file", Live: true})
+	if app.InEdit() {
+		t.Errorf("expected edit modal to be refused for live connection")
+	}
+
+	// Refusal 2: Wildcard connection
+	app.ShowEditModal(hosts.Entry{Alias: "*.wildcard", Source: "file", Wildcard: true})
+	if app.InEdit() {
+		t.Errorf("expected edit modal to be refused for wildcard connection")
+	}
+}
+

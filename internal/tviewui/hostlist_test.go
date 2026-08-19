@@ -182,4 +182,31 @@ func TestFilterInputCaptureCtrlNTriggersCreate(t *testing.T) {
 	}
 }
 
+func TestHostListPaneEditCallback(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.Refresh()
+	var edited hosts.Entry
+	pane.SetOnEdit(func(e hosts.Entry) {
+		edited = e
+	})
+	pane.TriggerEdit()
+	if edited.Alias != "prod-db-01" {
+		t.Errorf("expected OnEdit callback for prod-db-01, got %q", edited.Alias)
+	}
+}
+
+func TestFilterInputCaptureCtrlETriggersEdit(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.Refresh()
+	var edited hosts.Entry
+	pane.SetOnEdit(func(e hosts.Entry) {
+		edited = e
+	})
+	pane.HandleFilterKey(tcell.NewEventKey(tcell.KeyCtrlE, 0, tcell.ModNone))
+	if edited.Alias != "prod-db-01" {
+		t.Errorf("expected OnEdit callback for prod-db-01 when Ctrl+E pressed in filter, got %q", edited.Alias)
+	}
+}
+
+
 

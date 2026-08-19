@@ -18,11 +18,12 @@ type HostListPane struct {
 	filter     *tview.InputField
 	list       *tview.List
 	flex       *tview.Flex
-	onConnect  func(hosts.Entry)
-	onScope    func()
-	onRefresh  func()
-	onCreate   func()
-	onDelete   func(hosts.Entry)
+	onConnect func(hosts.Entry)
+	onScope   func()
+	onRefresh func()
+	onCreate  func()
+	onEdit    func(hosts.Entry)
+	onDelete  func(hosts.Entry)
 	syncStatus string
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
 }
@@ -68,6 +69,9 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		case tcell.KeyCtrlN:
 			p.TriggerCreate()
 			return nil
+		case tcell.KeyCtrlE:
+			p.TriggerEdit()
+			return nil
 		case tcell.KeyCtrlD, tcell.KeyDelete:
 			p.TriggerDelete()
 			return nil
@@ -96,6 +100,9 @@ func (p *HostListPane) handleFilterKey(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyCtrlN:
 		p.TriggerCreate()
+		return nil
+	case tcell.KeyCtrlE:
+		p.TriggerEdit()
 		return nil
 	case tcell.KeyDown:
 		cur := p.list.GetCurrentItem()
@@ -174,6 +181,20 @@ func (p *HostListPane) SetOnCreate(fn func()) {
 func (p *HostListPane) TriggerCreate() {
 	if p.onCreate != nil {
 		p.onCreate()
+	}
+}
+
+// SetOnEdit sets the callback for editing a connection (Ctrl+E).
+func (p *HostListPane) SetOnEdit(fn func(hosts.Entry)) {
+	p.onEdit = fn
+}
+
+// TriggerEdit fires the edit callback for the currently selected entry.
+func (p *HostListPane) TriggerEdit() {
+	if p.onEdit != nil {
+		if e, ok := p.SelectedEntry(); ok {
+			p.onEdit(e)
+		}
 	}
 }
 

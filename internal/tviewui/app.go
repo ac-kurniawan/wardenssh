@@ -45,6 +45,7 @@ type App struct {
 	quitModal   *QuitModal
 	discModal   *DisconnectModal
 	createModal *CreateModal
+	editModal   *CreateModal
 	deleteModal *DeleteModal
 	footer      *Footer
 
@@ -58,6 +59,7 @@ type App struct {
 	inQuit        bool
 	inDisconnect  bool
 	inCreate      bool
+	inEdit        bool
 	inDelete      bool
 	sshConfigPath string
 	termFocused   bool // focus is on the terminal pane (vs. the host list)
@@ -99,6 +101,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	a.hostPane.SetOnScopeChange(func() {})
 	a.hostPane.SetOnRefresh(func() { _ = a.TriggerSync() })
 	a.hostPane.SetOnCreate(a.showCreateModal)
+	a.hostPane.SetOnEdit(a.showEditModal)
 	a.hostPane.SetOnDelete(a.showDeleteModal)
 
 	// Layout: left = host list, right = terminal (hidden initially).
@@ -212,6 +215,9 @@ func (a *App) InSetup() bool { return a.inSetup }
 
 // InQuitModal reports whether the quit modal is active.
 func (a *App) InQuitModal() bool { return a.inQuit }
+
+// InEdit reports whether the edit modal is active.
+func (a *App) InEdit() bool { return a.inEdit }
 
 // SkipSetup skips all vault setup (for tests / Esc key).
 func (a *App) SkipSetup() {
@@ -423,6 +429,74 @@ func (a *App) showDeleteModal(entry hosts.Entry) {
 	a.deleteModal.SetOnCancel(a.CloseDeleteModal)
 	a.overlay.AddPage("delete", a.deleteModal.Primitive(), true, true)
 	a.app.SetFocus(a.deleteModal.Primitive())
+}
+
+// ShowEditModal opens the edit modal for a given host entry (exported for tests).
+func (a *App) ShowEditModal(entry hosts.Entry) { a.showEditModal(entry) }
+
+// EditModal returns the current edit CreateModal instance (used in tests).
+func (a *App) EditModal() *CreateModal { return a.editModal }
+
+// CloseEditModal closes the edit modal.
+func (a *App) CloseEditModal() {
+	if a.inEdit {
+		a.inEdit = false
+		a.overlay.RemovePage("edit")
+		a.hostPane.Refresh()
+		a.app.SetFocus(a.hostPane.Primitive())
+	}
+}
+
+func (a *App) showEditModal(entry hosts.Entry) {
+	if a.inEdit || a.inCreate || a.inDelete {
+		return
+	}
+
+	// Refusal check 1: live session connected
+	if entry.Live || a.termPane.HasSession(SessionKey(entry.Alias, entry.Source)) {
+		a.showInfoModal(fmt.Sprintf("Connection '%s' is in use.\n\nDisconnect first to edit.", entry.Alias))
+		return
+	}
+
+	// Refusal check 2: wildcard pattern
+	if entry.Wildcard || strings.ContainsAny(entry.Alias, "*?") {
+		a.showInfoModal(fmt.Sprintf("'%s' is a wildcard pattern, not a connection.", entry.Alias))
+		return
+	}
+
+	targets := a.availableTargets()
+	a.editModal = NewEditModal(entry, targets)
+	a.editModal.SetOnSubmit(func(params CreateParams) error {
+		if err := a.HandleUpdateConnection(entry, params); err != nil {
+			return err
+		}
+		a.CloseEditModal()
+		return nil
+	})
+	a.editModal.SetOnCancel(a.CloseEditModal)
+	a.inEdit = true
+	a.overlay.AddPage("edit", a.editModal.Primitive(), true, true)
+	a.app.SetFocus(a.editModal.Primitive())
+}
+
+func (a *App) showInfoModal(msg string) {
+	info := tview.NewModal().
+		SetText(msg).
+		AddButtons([]string{"OK"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			a.overlay.RemovePage("info")
+			a.app.SetFocus(a.hostPane.Primitive())
+		})
+	info.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape || event.Key() == tcell.KeyEnter || event.Rune() == ' ' {
+			a.overlay.RemovePage("info")
+			a.app.SetFocus(a.hostPane.Primitive())
+			return nil
+		}
+		return event
+	})
+	a.overlay.AddPage("info", info, true, true)
+	a.app.SetFocus(info)
 }
 
 // SetSSHConfigPathForTest overrides the ssh config path used when writing host entries (tests only).
@@ -728,6 +802,271 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 	a.hostList.Merge([]hosts.Entry{newEntry})
 	a.hostPane.Refresh()
 	return nil
+}
+
+// HandleUpdateConnection updates an existing SSH connection in ~/.ssh/config or Vault.
+func (a *App) HandleUpdateConnection(oldEntry hosts.Entry, params CreateParams) error {
+	if oldEntry.Source == "file" || oldEntry.Source == "~/.ssh/config" {
+		return a.handleUpdateFileConnection(oldEntry, params)
+	}
+	return a.handleUpdateVaultConnection(oldEntry, params)
+}
+
+func (a *App) handleUpdateFileConnection(oldEntry hosts.Entry, params CreateParams) error {
+	authKind := params.AuthKind
+	if authKind == "" {
+		authKind = "key"
+	}
+
+	identityPath := oldEntry.IdentityFile
+
+	if oldEntry.AuthKind == "password" && authKind == "key" {
+		// Switched from password to key auth -> generate new keypair
+		algo := params.KeyAlgo
+		if algo == "" {
+			algo = "ed25519"
+		}
+		var sshDir string
+		if a.sshConfigPath != "" {
+			sshDir = filepath.Dir(a.sshConfigPath)
+		} else {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("resolve home dir: %w", err)
+			}
+			sshDir = filepath.Join(home, ".ssh")
+		}
+		identityPath = filepath.Join(sshDir, fmt.Sprintf("id_%s_%s", algo, params.Alias))
+		if err := sshconfig.GenerateKeyToFile(algo, identityPath); err != nil {
+			return fmt.Errorf("generate key: %w", err)
+		}
+	} else if oldEntry.AuthKind != "password" && authKind == "password" {
+		// Switched from key to password -> drop IdentityFile directive (keep files on disk)
+		identityPath = ""
+	}
+
+	configPath := a.sshConfigPath
+	if configPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve home dir: %w", err)
+		}
+		configPath = filepath.Join(home, ".ssh", "config")
+	}
+
+	cfg := sshconfig.HostConfig{
+		Alias:        params.Alias,
+		HostName:     params.HostName,
+		User:         params.User,
+		Port:         params.Port,
+		ProxyJump:    params.ProxyJump,
+		IdentityFile: identityPath,
+	}
+
+	if err := sshconfig.UpdateHostEntry(configPath, oldEntry.Alias, cfg); err != nil {
+		return fmt.Errorf("update ssh config entry: %w", err)
+	}
+
+	updatedEntry := hosts.Entry{
+		Alias:        params.Alias,
+		HostName:     params.HostName,
+		User:         params.User,
+		Port:         params.Port,
+		ProxyJump:    params.ProxyJump,
+		Source:       "file",
+		IdentityFile: identityPath,
+		AuthKind:     authKind,
+	}
+	a.hostList.Replace(oldEntry.Alias, oldEntry.Source, updatedEntry)
+	a.hostPane.Refresh()
+	return nil
+}
+
+func (a *App) handleUpdateVaultConnection(oldEntry hosts.Entry, params CreateParams) error {
+	if a.deps.VaultCli == nil {
+		return fmt.Errorf("vault client is unavailable")
+	}
+
+	vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client)
+	if !ok {
+		return fmt.Errorf("invalid vault client type")
+	}
+
+	targetSource := vAdapterClient.SourceByName(oldEntry.Source)
+	if targetSource == nil {
+		return fmt.Errorf("vault source %q not found", oldEntry.Source)
+	}
+
+	items, err := targetSource.Items()
+	if err != nil {
+		return fmt.Errorf("get vault items: %w", err)
+	}
+
+	var targetItem *vault.Item
+	for i := range items {
+		if items[i].Name == oldEntry.Alias {
+			targetItem = &items[i]
+			break
+		}
+	}
+	if targetItem == nil {
+		return fmt.Errorf("connection %q not found in vault %s", oldEntry.Alias, oldEntry.Source)
+	}
+
+	// Duplicate alias validation if renamed
+	if params.Alias != oldEntry.Alias {
+		for _, it := range items {
+			if strings.EqualFold(it.Name, params.Alias) {
+				return fmt.Errorf("connection %q already exists in %s", params.Alias, oldEntry.Source)
+			}
+		}
+	}
+
+	cachedCipher, ok := targetSource.CipherByID(targetItem.ID)
+	if !ok {
+		return fmt.Errorf("cached cipher for %q not found", targetItem.ID)
+	}
+
+	sess := targetSource.Session()
+	if sess == nil {
+		return fmt.Errorf("session for vault %s is unavailable", oldEntry.Source)
+	}
+
+	cf := targetSource.Fields()
+	if cf.Host == "" {
+		cf = a.deps.CustomFields
+	}
+	if cf.Host == "" {
+		cf.Host = "host"
+	}
+	if cf.User == "" {
+		cf.User = "user"
+	}
+	if cf.Port == "" {
+		cf.Port = "port"
+	}
+	if cf.ProxyJump == "" {
+		cf.ProxyJump = "proxyjump"
+	}
+	if cf.Type == "" {
+		cf.Type = "type"
+	}
+
+	var serverURL string
+	for _, v := range a.vaults {
+		if v.Name == oldEntry.Source || "vw:"+v.Name == oldEntry.Source {
+			serverURL = v.Server
+			break
+		}
+	}
+	if serverURL == "" && len(a.vaults) > 0 {
+		serverURL = a.vaults[0].Server
+	}
+
+	vc := vaultclientNew(serverURL)
+
+	// 1. Re-encrypt Name
+	encName, err := sess.EncryptField(params.Alias)
+	if err != nil {
+		return fmt.Errorf("encrypt name: %w", err)
+	}
+	cachedCipher.Name = encName
+
+	// 2. Update custom fields, preserving unknown/unmanaged custom fields
+	updatedFields, err := updateCipherCustomFields(sess, cachedCipher.Fields, cf, params)
+	if err != nil {
+		return fmt.Errorf("update custom fields: %w", err)
+	}
+	cachedCipher.Fields = updatedFields
+
+	// 3. Update password/username if Login cipher
+	if cachedCipher.Login != nil {
+		if params.User != "" {
+			encUser, err := sess.EncryptField(params.User)
+			if err != nil {
+				return fmt.Errorf("encrypt username: %w", err)
+			}
+			cachedCipher.Login.Username = encUser
+		}
+		if params.Password != "" {
+			encPass, err := sess.EncryptField(params.Password)
+			if err != nil {
+				return fmt.Errorf("encrypt password: %w", err)
+			}
+			cachedCipher.Login.Password = encPass
+		}
+	}
+
+	updated, err := vc.UpdateCipher(sess, targetItem.ID, cachedCipher)
+	if err != nil {
+		return fmt.Errorf("update vault cipher: %w", err)
+	}
+
+	if updated != nil {
+		targetSource.UpdateCipher(*updated)
+	} else {
+		targetSource.UpdateCipher(cachedCipher)
+	}
+
+	updatedEntry := hosts.Entry{
+		Alias:     params.Alias,
+		HostName:  params.HostName,
+		User:      params.User,
+		Port:      params.Port,
+		ProxyJump: params.ProxyJump,
+		Source:    oldEntry.Source,
+		AuthKind:  oldEntry.AuthKind,
+	}
+	a.hostList.Replace(oldEntry.Alias, oldEntry.Source, updatedEntry)
+	a.hostPane.Refresh()
+	return nil
+}
+
+func updateCipherCustomFields(sess *vaultclient.Session, existing []vaultclient.CustomField, cf config.CustomFields, params CreateParams) ([]vaultclient.CustomField, error) {
+	desired := map[string]string{
+		cf.Host:      params.HostName,
+		cf.User:      params.User,
+		cf.Port:      params.Port,
+		cf.ProxyJump: params.ProxyJump,
+		cf.Type:      "SSH",
+	}
+
+	handled := make(map[string]bool)
+	var result []vaultclient.CustomField
+
+	for _, f := range existing {
+		nameBytes, err := sess.DecryptField(f.Name)
+		if err != nil {
+			result = append(result, f)
+			continue
+		}
+		nameStr := string(nameBytes)
+		if newVal, isManaged := desired[nameStr]; isManaged {
+			handled[nameStr] = true
+			if newVal != "" {
+				encVal, err := sess.EncryptField(newVal)
+				if err != nil {
+					return nil, err
+				}
+				f.Value = encVal
+				result = append(result, f)
+			}
+		} else {
+			result = append(result, f)
+		}
+	}
+
+	for k, val := range desired {
+		if !handled[k] && val != "" {
+			encField, err := encryptCustomField(sess, k, val)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, encField)
+		}
+	}
+
+	return result, nil
 }
 
 // HandleDeleteConnection deletes an SSH connection entry from ~/.ssh/config or Vault.
