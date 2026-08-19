@@ -228,6 +228,27 @@ func (s *Source) AddCipher(c vaultclient.Cipher) {
 	s.ciphers = append(s.ciphers, c)
 }
 
+// UpdateCipher replaces the cached cipher with matching ID, or appends if not found.
+func (s *Source) UpdateCipher(c vaultclient.Cipher) {
+	for i, existing := range s.ciphers {
+		if existing.ID == c.ID {
+			s.ciphers[i] = c
+			return
+		}
+	}
+	s.ciphers = append(s.ciphers, c)
+}
+
+// CipherByID returns the cached raw cipher matching the given ID.
+func (s *Source) CipherByID(id string) (vaultclient.Cipher, bool) {
+	for _, c := range s.ciphers {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return vaultclient.Cipher{}, false
+}
+
 // RemoveCipher drops the cipher with the given id from the source's cached
 // list. Called after a permanent delete so the deleted item never resurfaces
 // from the local cache (e.g. when a later sync fails and the cache is kept).

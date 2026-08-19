@@ -284,3 +284,104 @@ func TestDeleteCipher_Error(t *testing.T) {
 		t.Error("expected error for 404 response")
 	}
 }
+
+func TestUpdateCipher_Success(t *testing.T) {
+	var capturedMethod, capturedPath, capturedAuth, capturedContentType string
+	var capturedBody Cipher
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedPath = r.URL.Path
+		capturedAuth = r.Header.Get("Authorization")
+		capturedContentType = r.Header.Get("Content-Type")
+
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &capturedBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		resp := Cipher{
+			ID:     "cipher-id-edit-1",
+			Name:   capturedBody.Name,
+			Type:   capturedBody.Type,
+			Login:  capturedBody.Login,
+			SshKey: capturedBody.SshKey,
+			Fields: capturedBody.Fields,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	sess := &Session{AccessToken: "update-token-999"}
+	updatedItem := Cipher{
+		ID:   "cipher-id-edit-1",
+		Name: "2.enc_updated_name==",
+		Type: 1,
+		Login: &Login{
+			Username: "2.enc_user==",
+			Password: "2.enc_new_pass==",
+		},
+		Fields: []CustomField{
+			{Name: "2.host==", Value: "2.new_host==", Type: 0},
+			{Name: "2.port==", Value: "2.2222==", Type: 0},
+		},
+	}
+
+	res, err := c.UpdateCipher(sess, "cipher-id-edit-1", updatedItem)
+	if err != nil {
+		t.Fatalf("UpdateCipher failed: %v", err)
+	}
+
+	if capturedMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", capturedMethod)
+	}
+	if capturedPath != "/api/ciphers/cipher-id-edit-1" {
+		t.Errorf("path = %q, want /api/ciphers/cipher-id-edit-1", capturedPath)
+	}
+	if capturedAuth != "Bearer update-token-999" {
+		t.Errorf("auth = %q, want 'Bearer update-token-999'", capturedAuth)
+	}
+	if capturedContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", capturedContentType)
+	}
+	if res == nil || res.ID != "cipher-id-edit-1" || res.Name != "2.enc_updated_name==" {
+		t.Errorf("unexpected updated cipher: %+v", res)
+	}
+	if len(res.Fields) != 2 {
+		t.Errorf("expected 2 fields, got %d", len(res.Fields))
+	}
+}
+
+func TestUpdateCipher_InvalidArgsAndServerErrors(t *testing.T) {
+	c := New("http://localhost:8000")
+
+	// Nil session
+	if _, err := c.UpdateCipher(nil, "id", Cipher{Name: "n"}); err == nil {
+		t.Error("expected error for nil session")
+	}
+
+	// Empty token
+	if _, err := c.UpdateCipher(&Session{AccessToken: ""}, "id", Cipher{Name: "n"}); err == nil {
+		t.Error("expected error for empty access token")
+	}
+
+	// Empty ID
+	if _, err := c.UpdateCipher(&Session{AccessToken: "tok"}, "", Cipher{Name: "n"}); err == nil {
+		t.Error("expected error for empty id")
+	}
+
+	// 404 / 500 server error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Item not found"}`))
+	}))
+	defer srv.Close()
+
+	c2 := New(srv.URL)
+	sess := &Session{AccessToken: "tok"}
+	if _, err := c2.UpdateCipher(sess, "missing-id", Cipher{Name: "n"}); err == nil {
+		t.Error("expected error for 404 response")
+	}
+}
+

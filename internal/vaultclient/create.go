@@ -76,3 +76,46 @@ func (c *Client) DeleteCipher(sess *Session, id string) error {
 
 	return nil
 }
+
+// UpdateCipher updates an existing Cipher item in VaultWarden / BitWarden via PUT /api/ciphers/{id}.
+// It requires an authenticated Session with a valid AccessToken.
+func (c *Client) UpdateCipher(sess *Session, id string, item Cipher) (*Cipher, error) {
+	if sess == nil || sess.AccessToken == "" {
+		return nil, errors.New("vaultclient: session or access token is required")
+	}
+	if id == "" {
+		return nil, errors.New("vaultclient: cipher id is required")
+	}
+
+	body, err := json.Marshal(item)
+	if err != nil {
+		return nil, fmt.Errorf("update cipher: marshal: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/ciphers/%s", c.BaseURL, id)
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("update cipher: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+sess.AccessToken)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("update cipher: status %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var updated Cipher
+	if err := json.NewDecoder(resp.Body).Decode(&updated); err != nil {
+		return nil, fmt.Errorf("update cipher: decode: %w", err)
+	}
+
+	return &updated, nil
+}
+

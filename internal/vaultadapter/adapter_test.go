@@ -408,3 +408,30 @@ func TestSourceDecryptLogin(t *testing.T) {
 		t.Errorf("user=%q pass=%q, want admin/s3cret", user, pass)
 	}
 }
+
+func TestSourceUpdateCipherAndCipherByID(t *testing.T) {
+	sess := fakeSession(t)
+	cf := config.Default().CustomFields
+	ci1 := vaultclient.Cipher{ID: "c1", Name: enc(t, sess, "server1")}
+	ci2 := vaultclient.Cipher{ID: "c2", Name: enc(t, sess, "server2")}
+
+	src := vaultadapter.NewSource("vw:personal", sess, []vaultclient.Cipher{ci1, ci2}, cf)
+
+	got, ok := src.CipherByID("c2")
+	if !ok || got.Name != ci2.Name {
+		t.Errorf("CipherByID(c2) = (%+v, %v), want (%+v, true)", got, ok, ci2)
+	}
+
+	if _, ok := src.CipherByID("nonexistent"); ok {
+		t.Errorf("expected false for nonexistent ID")
+	}
+
+	updated2 := vaultclient.Cipher{ID: "c2", Name: enc(t, sess, "server2-updated")}
+	src.UpdateCipher(updated2)
+
+	gotUpdated, ok := src.CipherByID("c2")
+	if !ok || gotUpdated.Name != updated2.Name {
+		t.Errorf("CipherByID after update = (%+v, %v), want (%+v, true)", gotUpdated, ok, updated2)
+	}
+}
+
