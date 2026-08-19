@@ -132,6 +132,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	if len(vaults) > 0 {
 		a.inSetup = true
 		a.setupModal = NewSetupModal(vaults, deps.CustomFields, hostList, deps.NoKeyring)
+		a.setupModal.SetApplication(a.app)
 		a.setupModal.SetOnComplete(func(vc vault.Client) {
 			a.app.QueueUpdateDraw(func() {
 				a.inSetup = false

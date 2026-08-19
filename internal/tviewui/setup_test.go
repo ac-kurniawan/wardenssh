@@ -214,6 +214,69 @@ func TestSetupModalSavesRefreshTokenToKeyringOnLogin(t *testing.T) {
 // Compile-time check that vault.Client is used in the callback signature.
 var _ vault.Client = (vault.Client)(nil)
 
+// TestSetupModalFailedLoginShowsErrorOnScreen: a failed login (wrong master
+// password) must visibly repaint the modal so the user SEES the failure.
+// The login runs on a background goroutine; tview only repaints after input
+// events or QueueUpdateDraw, so if the error-path title update is applied
+// off-loop without scheduling a draw, the screen keeps showing the pristine
+// title and the user gets no feedback at all. This drives a real headless
+// application and reads the simulation screen, not just modal state.
+func TestSetupModalFailedLoginShowsErrorOnScreen(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/accounts/prelogin", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	screen.SetSize(120, 30)
+
+	app := tview.NewApplication().SetScreen(screen)
+	hl := hosts.NewList(nil)
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl, true)
+	m.SetApplication(app)
+	app.SetRoot(m.Primitive(), true)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.Run() }()
+	defer func() {
+		app.Stop()
+		<-runDone
+	}()
+
+	m.TypeRune('w')
+	m.TypeRune('r')
+	m.TypeRune('o')
+	m.TypeRune('n')
+	m.TypeRune('g')
+	m.Submit()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		cells, width, height := screen.GetContents()
+		var sb strings.Builder
+		for i := 0; i < width*height && i < len(cells); i++ {
+			for _, r := range cells[i].Runes {
+				sb.WriteRune(r)
+			}
+		}
+		if strings.Contains(sb.String(), "login") {
+			return // error message became visible
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("login failure message never appeared on screen; last errMsg=%q", m.Error())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestSetupModalEnterKeySubmits(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/identity/accounts/prelogin", func(w http.ResponseWriter, r *http.Request) {

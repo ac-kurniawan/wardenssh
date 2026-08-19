@@ -83,6 +83,7 @@ type SetupModal struct {
 	onSkip     func()
 
 	noKeyring bool
+	tapp      *tview.Application
 
 	mu sync.Mutex
 }
@@ -113,6 +114,9 @@ func NewSetupModal(vaults []config.Vault, cf config.CustomFields, hl *hosts.List
 
 func (m *SetupModal) buildForm() {
 	m.form = tview.NewForm()
+	// Border is required: tview renders the box title (which carries the
+	// vault prompt and login errors) only when the border is enabled.
+	m.form.SetBorder(true)
 	m.updateTitle()
 
 	// Read-only context fields so the user can confirm WHICH vault they are
@@ -208,6 +212,10 @@ func (m *SetupModal) SetOnComplete(fn func(vault.Client)) { m.onComplete = fn }
 // SetOnSkip installs the callback fired when all vaults are skipped.
 func (m *SetupModal) SetOnSkip(fn func()) { m.onSkip = fn }
 
+// SetApplication attaches the tview application so async login results can
+// repaint the modal on the event loop (tview is not thread-safe).
+func (m *SetupModal) SetApplication(a *tview.Application) { m.tapp = a }
+
 // CurrentPrompt returns the current vault name + email.
 func (m *SetupModal) CurrentPrompt() string {
 	if m.idx >= len(m.vaults) {
@@ -260,8 +268,8 @@ func (m *SetupModal) Submit() {
 			m.loggingIn = false
 			m.errMsg = fmt.Sprintf("login %q: %v", v.Name, err)
 			m.password = ""
-			m.updateTitle()
 			m.mu.Unlock()
+			m.redraw(m.updateTitle)
 			return
 		}
 		if sess.RefreshToken != "" {
@@ -273,8 +281,8 @@ func (m *SetupModal) Submit() {
 			m.loggingIn = false
 			m.errMsg = fmt.Sprintf("sync %q: %v", v.Name, err)
 			m.password = ""
-			m.updateTitle()
 			m.mu.Unlock()
+			m.redraw(m.updateTitle)
 			return
 		}
 		src := vaultadapterNewSource(v.Name, sess, sr.Ciphers, cf)
@@ -283,11 +291,24 @@ func (m *SetupModal) Submit() {
 		m.sources = append(m.sources, src)
 		m.idx++
 		m.password = ""
-		m.updateTitle()
-		m.updateContextFields()
 		m.mu.Unlock()
+		m.redraw(func() {
+			m.updateTitle()
+			m.updateContextFields()
+		})
 		m.checkDone()
 	}()
+}
+
+// redraw runs fn on the tview event loop when an application is attached
+// (production), so the modal actually repaints after async login results;
+// without an application (tests) it runs fn inline.
+func (m *SetupModal) redraw(fn func()) {
+	if m.tapp == nil {
+		fn()
+		return
+	}
+	m.tapp.QueueUpdateDraw(fn)
 }
 
 // SkipCurrent skips the current vault and advances to the next.
