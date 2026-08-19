@@ -22,6 +22,7 @@ type Entry struct {
 	Live         bool   // green-dot: a session to this host is currently open
 	IdentityFile string // path to private key file (file-sourced entries only)
 	AuthKind     string // "key" (default) | "password" — how connect authenticates
+	Wildcard     bool   // true for wildcard blocks (e.g. Host * or *.domain)
 }
 
 // List is the merged, filterable, scope-cyclable host list.
@@ -236,3 +237,23 @@ func (l *List) Remove(alias, source string) {
 		l.scopeIdx = 0
 	}
 }
+
+// Replace updates an existing entry matching oldAlias and oldSource with newEntry in-place,
+// preserving the Live state if set. If the old entry is not found, newEntry is appended.
+func (l *List) Replace(oldAlias, oldSource string, newEntry Entry) {
+	for i, e := range l.entries {
+		if e.Alias == oldAlias && e.Source == oldSource {
+			if e.Live {
+				newEntry.Live = true
+			}
+			l.entries[i] = newEntry
+			l.scopes = l.deriveScopes()
+			if l.scopeIdx >= len(l.scopes) {
+				l.scopeIdx = 0
+			}
+			return
+		}
+	}
+	l.Merge([]Entry{newEntry})
+}
+

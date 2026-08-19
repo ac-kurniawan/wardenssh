@@ -334,3 +334,39 @@ func TestListRemoveEntry(t *testing.T) {
 		t.Errorf("All() = %v, want [host2]", all)
 	}
 }
+
+func TestListReplaceEntry(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "host1", HostName: "1.1.1.1", Source: "file"},
+		{Alias: "host2", HostName: "2.2.2.2", Source: "vw:personal"},
+	})
+	l.MarkLive("host1", "file")
+
+	updated := hosts.Entry{
+		Alias:    "host1-renamed",
+		HostName: "1.1.1.99",
+		User:     "root",
+		Port:     "2222",
+		Source:   "file",
+	}
+
+	l.Replace("host1", "file", updated)
+
+	all := l.All()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries after replace, got %d", len(all))
+	}
+
+	if all[0].Alias != "host1-renamed" || all[0].HostName != "1.1.1.99" || all[0].User != "root" || all[0].Port != "2222" {
+		t.Errorf("unexpected updated entry: %+v", all[0])
+	}
+	if !all[0].Live {
+		t.Errorf("expected Live flag to be preserved on updated entry")
+	}
+
+	// Replace non-existent appends
+	l.Replace("nonexistent", "file", hosts.Entry{Alias: "host3", HostName: "3.3.3.3", Source: "file"})
+	if len(l.All()) != 3 {
+		t.Errorf("expected 3 entries after replacing non-existent, got %d", len(l.All()))
+	}
+}
