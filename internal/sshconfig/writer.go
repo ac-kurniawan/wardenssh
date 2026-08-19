@@ -130,7 +130,106 @@ func AppendHostEntry(configPath string, cfg HostConfig) error {
 	return nil
 }
 
-// DeleteHostEntry removes a Host block matching alias from the ssh config file.
+// isManagedDirective reports whether key is one of the 5 fields managed by WardenSSH.
+func isManagedDirective(key string) bool {
+	switch strings.ToLower(key) {
+	case "hostname", "user", "port", "proxyjump", "identityfile":
+		return true
+	default:
+		return false
+	}
+}
+
+// UpdateHostEntry updates a Host block matching oldAlias in-place, replacing
+// managed directives (HostName, User, Port, ProxyJump, IdentityFile) with values
+// from cfg, while preserving position, comments, and unmanaged directives.
+func UpdateHostEntry(configPath string, oldAlias string, cfg HostConfig) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	targetAlias := strings.ToLower(oldAlias)
+
+	var newLines []string
+	found := false
+	inTargetBlock := false
+	var preservedLines []string
+
+	flushUpdatedBlock := func() {
+		newLines = append(newLines, fmt.Sprintf("Host %s", cfg.Alias))
+		if cfg.HostName != "" {
+			newLines = append(newLines, fmt.Sprintf("    HostName %s", cfg.HostName))
+		}
+		if cfg.User != "" {
+			newLines = append(newLines, fmt.Sprintf("    User %s", cfg.User))
+		}
+		if cfg.Port != "" {
+			newLines = append(newLines, fmt.Sprintf("    Port %s", cfg.Port))
+		}
+		if cfg.ProxyJump != "" {
+			newLines = append(newLines, fmt.Sprintf("    ProxyJump %s", cfg.ProxyJump))
+		}
+		if cfg.IdentityFile != "" {
+			newLines = append(newLines, fmt.Sprintf("    IdentityFile %s", cfg.IdentityFile))
+		}
+		newLines = append(newLines, preservedLines...)
+		preservedLines = nil
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		fields := strings.Fields(trimmed)
+
+		if len(fields) >= 1 && (strings.EqualFold(fields[0], "Host") || strings.EqualFold(fields[0], "Match")) {
+			if inTargetBlock {
+				flushUpdatedBlock()
+				inTargetBlock = false
+			}
+
+			if strings.EqualFold(fields[0], "Host") && len(fields) >= 2 {
+				matched := false
+				for _, h := range fields[1:] {
+					if strings.ToLower(h) == targetAlias {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					found = true
+					inTargetBlock = true
+					continue
+				}
+			}
+		}
+
+		if inTargetBlock {
+			if len(fields) > 0 && isManagedDirective(fields[0]) {
+				continue
+			}
+			preservedLines = append(preservedLines, line)
+		} else {
+			newLines = append(newLines, line)
+		}
+	}
+
+	if inTargetBlock {
+		flushUpdatedBlock()
+	}
+
+	if !found {
+		return fmt.Errorf("host %q not found in config", oldAlias)
+	}
+
+	output := strings.Join(newLines, "\n")
+	if err := os.WriteFile(configPath, []byte(output), 0600); err != nil {
+		return fmt.Errorf("write config file: %w", err)
+	}
+
+	return nil
+}
+
 func DeleteHostEntry(configPath string, alias string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {

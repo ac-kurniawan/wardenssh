@@ -297,4 +297,151 @@ func TestDeleteHostEntry(t *testing.T) {
 	}
 }
 
+func TestUpdateHostEntry_InPlaceAndPreserveDirectives(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	initial := `Host host1
+    HostName 1.1.1.1
+
+# Custom comment before host2
+Host host2
+    # Inline comment inside host2
+    HostName 2.2.2.2
+    User olduser
+    Port 2200
+    ForwardAgent yes
+    LocalForward 8080 127.0.0.1:80
+
+Host host3
+    HostName 3.3.3.3
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0600); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	cfg := sshconfig.HostConfig{
+		Alias:        "host2",
+		HostName:     "2.2.2.99",
+		User:         "newuser",
+		Port:         "2222",
+		ProxyJump:    "jumpbox",
+		IdentityFile: "~/.ssh/id_ed25519_host2",
+	}
+
+	err := sshconfig.UpdateHostEntry(configPath, "host2", cfg)
+	if err != nil {
+		t.Fatalf("UpdateHostEntry failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	str := string(content)
+
+	// Verify position: host1 comes before host2, host2 comes before host3
+	idx1 := strings.Index(str, "Host host1")
+	idx2 := strings.Index(str, "Host host2")
+	idx3 := strings.Index(str, "Host host3")
+	if idx1 == -1 || idx2 == -1 || idx3 == -1 || !(idx1 < idx2 && idx2 < idx3) {
+		t.Errorf("expected block order host1 < host2 < host3, got indices %d, %d, %d in:\n%s", idx1, idx2, idx3, str)
+	}
+
+	// Verify updated fields
+	if !strings.Contains(str, "HostName 2.2.2.99") {
+		t.Errorf("expected updated HostName 2.2.2.99 in:\n%s", str)
+	}
+	if !strings.Contains(str, "User newuser") {
+		t.Errorf("expected updated User newuser in:\n%s", str)
+	}
+	if !strings.Contains(str, "Port 2222") {
+		t.Errorf("expected updated Port 2222 in:\n%s", str)
+	}
+	if !strings.Contains(str, "ProxyJump jumpbox") {
+		t.Errorf("expected ProxyJump jumpbox in:\n%s", str)
+	}
+	if !strings.Contains(str, "IdentityFile ~/.ssh/id_ed25519_host2") {
+		t.Errorf("expected IdentityFile in:\n%s", str)
+	}
+
+	// Verify old values are gone
+	if strings.Contains(str, "2.2.2.2") || strings.Contains(str, "olduser") || strings.Contains(str, "2200") {
+		t.Errorf("expected old values to be replaced in:\n%s", str)
+	}
+
+	// Verify preserved comments and unknown directives
+	if !strings.Contains(str, "# Custom comment before host2") {
+		t.Errorf("expected outer comment to be preserved")
+	}
+	if !strings.Contains(str, "# Inline comment inside host2") {
+		t.Errorf("expected inline comment inside host2 to be preserved")
+	}
+	if !strings.Contains(str, "ForwardAgent yes") {
+		t.Errorf("expected ForwardAgent yes to be preserved")
+	}
+	if !strings.Contains(str, "LocalForward 8080 127.0.0.1:80") {
+		t.Errorf("expected LocalForward to be preserved")
+	}
+}
+
+func TestUpdateHostEntry_RenameAndDropDirective(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+
+	initial := `Host oldalias
+    HostName 10.0.0.1
+    User admin
+    Port 2222
+    IdentityFile ~/.ssh/id_rsa
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0600); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+
+	// Rename oldalias -> newalias and drop Port and IdentityFile (empty in cfg)
+	cfg := sshconfig.HostConfig{
+		Alias:    "newalias",
+		HostName: "10.0.0.2",
+		User:     "root",
+	}
+
+	err := sshconfig.UpdateHostEntry(configPath, "oldalias", cfg)
+	if err != nil {
+		t.Fatalf("UpdateHostEntry failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+	str := string(content)
+
+	if strings.Contains(str, "Host oldalias") {
+		t.Errorf("expected 'Host oldalias' to be replaced by 'Host newalias' in:\n%s", str)
+	}
+	if !strings.Contains(str, "Host newalias") {
+		t.Errorf("expected 'Host newalias' in:\n%s", str)
+	}
+	if strings.Contains(str, "Port") || strings.Contains(str, "IdentityFile") {
+		t.Errorf("expected Port and IdentityFile to be dropped when empty in cfg in:\n%s", str)
+	}
+}
+
+func TestUpdateHostEntry_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	_ = os.WriteFile(configPath, []byte("Host host1\n    HostName 1.1.1.1\n"), 0600)
+
+	cfg := sshconfig.HostConfig{
+		Alias:    "nonexistent",
+		HostName: "9.9.9.9",
+	}
+	err := sshconfig.UpdateHostEntry(configPath, "nonexistent", cfg)
+	if err == nil {
+		t.Fatalf("expected error for nonexistent host, got nil")
+	}
+}
+
+
 
