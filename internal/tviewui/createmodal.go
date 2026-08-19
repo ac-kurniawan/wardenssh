@@ -9,6 +9,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 )
 
 // CreateParams holds user input from CreateModal.
@@ -24,12 +26,13 @@ type CreateParams struct {
 	KeyAlgo   string // "ed25519" or "rsa4096"
 }
 
-// CreateModal is the interactive form modal for creating a new SSH connection.
+// CreateModal is the interactive form modal for creating or editing an SSH connection.
 type CreateModal struct {
 	form     *tview.Form
 	flex     *tview.Flex
 	targets  []string
 	params   CreateParams
+	isEdit   bool
 	errMsg   string
 	onSubmit func(CreateParams) error
 	onCancel func()
@@ -61,22 +64,98 @@ func NewCreateModal(targets []string) *CreateModal {
 	m.buildForm()
 	m.flex = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(nil, 0, 1, false).
-		AddItem(m.form, 22, 0, true).
+		AddItem(m.form, 24, 0, true).
+		AddItem(nil, 0, 1, false)
+	return m
+}
+
+// NewEditModal constructs the edit form modal prefilled with entry's current values.
+func NewEditModal(entry hosts.Entry, targets []string) *CreateModal {
+	SetBlockCursor()
+
+	target := entry.Source
+	if target == "file" || target == "" {
+		target = "~/.ssh/config"
+	}
+
+	if len(targets) == 0 {
+		targets = []string{target}
+	} else {
+		// Ensure entry's target is in the list
+		found := false
+		for _, t := range targets {
+			if t == target {
+				found = true
+				break
+			}
+		}
+		if !found {
+			targets = append([]string{target}, targets...)
+		}
+	}
+
+	authKind := entry.AuthKind
+	if authKind == "" {
+		authKind = "key"
+	}
+
+	port := entry.Port
+	if port == "" {
+		port = "22"
+	}
+
+	m := &CreateModal{
+		targets: targets,
+		isEdit:  true,
+		params: CreateParams{
+			Alias:     entry.Alias,
+			Target:    target,
+			HostName:  entry.HostName,
+			User:      entry.User,
+			Port:      port,
+			ProxyJump: entry.ProxyJump,
+			AuthKind:  authKind,
+			KeyAlgo:   "ed25519",
+		},
+	}
+	m.buildForm()
+	m.flex = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nil, 0, 1, false).
+		AddItem(m.form, 24, 0, true).
 		AddItem(nil, 0, 1, false)
 	return m
 }
 
 func (m *CreateModal) buildForm() {
 	m.form = tview.NewForm()
+	// Border is required for tview to render the form title (which carries validation errors).
+	m.form.SetBorder(true)
 	m.updateTitle()
 
 	m.form.AddInputField("Alias / Name:", m.params.Alias, 30, nil, func(text string) {
 		m.params.Alias = text
+		if m.isEdit {
+			m.updateTitle()
+		}
 	})
 
-	m.form.AddDropDown("Destination:", m.targets, 0, func(option string, index int) {
-		m.params.Target = option
-	})
+	initialTargetIdx := 0
+	for i, t := range m.targets {
+		if t == m.params.Target {
+			initialTargetIdx = i
+			break
+		}
+	}
+	targetDropdown := tview.NewDropDown().
+		SetLabel("Destination:").
+		SetOptions(m.targets, func(option string, index int) {
+			m.params.Target = option
+		}).
+		SetCurrentOption(initialTargetIdx)
+	if m.isEdit {
+		targetDropdown.SetDisabled(true)
+	}
+	m.form.AddFormItem(targetDropdown)
 
 	m.form.AddInputField("Hostname / IP:", m.params.HostName, 30, nil, func(text string) {
 		m.params.HostName = text
@@ -94,25 +173,52 @@ func (m *CreateModal) buildForm() {
 		m.params.ProxyJump = text
 	})
 
-	m.form.AddDropDown("Credential:", []string{"Key (Ed25519/RSA)", "Password"}, 0, func(option string, index int) {
-		if index == 1 {
-			m.params.AuthKind = "password"
-		} else {
-			m.params.AuthKind = "key"
-		}
-	})
+	credIdx := 0
+	if m.params.AuthKind == "password" {
+		credIdx = 1
+	}
+	credDropdown := tview.NewDropDown().
+		SetLabel("Credential:").
+		SetOptions([]string{"Key (Ed25519/RSA)", "Password"}, func(option string, index int) {
+			if index == 1 {
+				m.params.AuthKind = "password"
+			} else {
+				m.params.AuthKind = "key"
+			}
+		}).
+		SetCurrentOption(credIdx)
+	if m.isEdit && m.params.Target != "~/.ssh/config" && m.params.Target != "file" {
+		// Vault entries cannot switch AuthKind in edit mode (cipher type is immutable)
+		credDropdown.SetDisabled(true)
+	}
+	m.form.AddFormItem(credDropdown)
 
-	m.form.AddPasswordField("Password (if password auth):", m.params.Password, 30, '*', func(text string) {
+	pwLabel := "Password (if password auth):"
+	if m.isEdit && m.params.AuthKind == "password" {
+		pwLabel = "Password (empty = unchanged):"
+	}
+	m.form.AddPasswordField(pwLabel, m.params.Password, 30, '*', func(text string) {
 		m.params.Password = text
 	})
 
-	m.form.AddDropDown("Key Algo (if key auth):", []string{"Ed25519", "RSA 4096"}, 0, func(option string, index int) {
-		if index == 1 {
-			m.params.KeyAlgo = "rsa4096"
-		} else {
-			m.params.KeyAlgo = "ed25519"
-		}
-	})
+	algoIdx := 0
+	if m.params.KeyAlgo == "rsa4096" || m.params.KeyAlgo == "rsa" {
+		algoIdx = 1
+	}
+	algoDropdown := tview.NewDropDown().
+		SetLabel("Key Algo (if key auth):").
+		SetOptions([]string{"Ed25519", "RSA 4096"}, func(option string, index int) {
+			if index == 1 {
+				m.params.KeyAlgo = "rsa4096"
+			} else {
+				m.params.KeyAlgo = "ed25519"
+			}
+		}).
+		SetCurrentOption(algoIdx)
+	if m.isEdit && m.params.Target != "~/.ssh/config" && m.params.Target != "file" {
+		algoDropdown.SetDisabled(true)
+	}
+	m.form.AddFormItem(algoDropdown)
 
 	m.form.AddButton("Save", func() {
 		m.Submit()
@@ -206,12 +312,28 @@ func (m *CreateModal) UpdateFieldStyles() {
 }
 
 func (m *CreateModal) updateTitle() {
+	if m.isEdit {
+		alias := m.params.Alias
+		if alias == "" {
+			alias = "Connection"
+		}
+		if m.errMsg != "" {
+			m.form.SetTitle(fmt.Sprintf(" Edit Connection: %s [red](%s)[-] ", alias, m.errMsg))
+		} else {
+			m.form.SetTitle(fmt.Sprintf(" Edit Connection: %s ", alias))
+		}
+		return
+	}
+
 	if m.errMsg != "" {
 		m.form.SetTitle(fmt.Sprintf(" Create New Connection [red](%s)[-] ", m.errMsg))
 	} else {
 		m.form.SetTitle(" Create New SSH Connection ")
 	}
 }
+
+// IsEdit reports whether the modal is in edit mode.
+func (m *CreateModal) IsEdit() bool { return m.isEdit }
 
 // Form returns the underlying tview.Form primitive.
 func (m *CreateModal) Form() *tview.Form { return m.form }
@@ -299,7 +421,7 @@ func (m *CreateModal) Submit() {
 		m.updateTitle()
 		return
 	}
-	if m.params.AuthKind == "password" && strings.TrimSpace(m.params.Password) == "" {
+	if !m.isEdit && m.params.AuthKind == "password" && strings.TrimSpace(m.params.Password) == "" {
 		m.errMsg = "Password is required for password credential"
 		m.updateTitle()
 		return

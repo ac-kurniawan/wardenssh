@@ -8,6 +8,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 )
 
@@ -431,6 +432,110 @@ func TestCreateModal_ActiveFieldHighlight(t *testing.T) {
 	_ = item0
 	_ = item1
 }
+
+func TestEditModal_PrefilledFieldsAndTitle(t *testing.T) {
+	entry := hosts.Entry{
+		Alias:     "my-server",
+		HostName:  "192.168.1.50",
+		User:      "admin",
+		Port:      "2222",
+		ProxyJump: "bastion",
+		Source:    "file",
+		AuthKind:  "key",
+	}
+
+	targets := []string{"~/.ssh/config", "vw:personal"}
+	modal := tviewui.NewEditModal(entry, targets)
+
+	if !modal.IsEdit() {
+		t.Errorf("expected IsEdit() to be true")
+	}
+
+	var submittedParams tviewui.CreateParams
+	modal.SetOnSubmit(func(p tviewui.CreateParams) error {
+		submittedParams = p
+		return nil
+	})
+
+	modal.Submit()
+
+	if submittedParams.Alias != "my-server" {
+		t.Errorf("Alias = %q, want 'my-server'", submittedParams.Alias)
+	}
+	if submittedParams.HostName != "192.168.1.50" {
+		t.Errorf("HostName = %q, want '192.168.1.50'", submittedParams.HostName)
+	}
+	if submittedParams.User != "admin" {
+		t.Errorf("User = %q, want 'admin'", submittedParams.User)
+	}
+	if submittedParams.Port != "2222" {
+		t.Errorf("Port = %q, want '2222'", submittedParams.Port)
+	}
+	if submittedParams.ProxyJump != "bastion" {
+		t.Errorf("ProxyJump = %q, want 'bastion'", submittedParams.ProxyJump)
+	}
+	if submittedParams.Target != "~/.ssh/config" {
+		t.Errorf("Target = %q, want '~/.ssh/config'", submittedParams.Target)
+	}
+	if submittedParams.AuthKind != "key" {
+		t.Errorf("AuthKind = %q, want 'key'", submittedParams.AuthKind)
+	}
+}
+
+func TestEditModal_VaultPasswordCanBeEmpty(t *testing.T) {
+	entry := hosts.Entry{
+		Alias:    "db-prod",
+		HostName: "10.0.0.5",
+		User:     "root",
+		Source:   "vw:personal",
+		AuthKind: "password",
+	}
+
+	targets := []string{"~/.ssh/config", "vw:personal"}
+	modal := tviewui.NewEditModal(entry, targets)
+
+	var submittedParams tviewui.CreateParams
+	modal.SetOnSubmit(func(p tviewui.CreateParams) error {
+		submittedParams = p
+		return nil
+	})
+
+	// Password left empty -> should NOT trigger validation error in edit mode
+	modal.Submit()
+
+	if modal.Error() != "" {
+		t.Fatalf("expected no validation error for empty password on edit, got: %s", modal.Error())
+	}
+	if submittedParams.Password != "" {
+		t.Errorf("expected empty password to indicate unchanged, got %q", submittedParams.Password)
+	}
+}
+
+func TestCreateModal_BorderEnabled(t *testing.T) {
+	modal := tviewui.NewCreateModal([]string{"~/.ssh/config"})
+	// Box.GetBorder() returns whether border is enabled on the form
+	screen := tcell.NewSimulationScreen("UTF-8")
+	_ = screen.Init()
+	screen.SetSize(120, 30)
+
+	modal.Primitive().SetRect(0, 0, 120, 30)
+	modal.Primitive().Draw(screen)
+	screen.Show()
+
+	cells, w, h := screen.GetContents()
+	var sb strings.Builder
+	for i := 0; i < w*h && i < len(cells); i++ {
+		for _, r := range cells[i].Runes {
+			sb.WriteRune(r)
+		}
+	}
+	s := sb.String()
+
+	if !strings.Contains(s, "Create New SSH Connection") {
+		t.Errorf("expected border title 'Create New SSH Connection' to render on screen")
+	}
+}
+
 
 
 
