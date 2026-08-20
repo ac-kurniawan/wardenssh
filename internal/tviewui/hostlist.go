@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
@@ -27,6 +28,8 @@ type HostListPane struct {
 	syncStatus string
 	focused    bool
 	rowWidth   int
+	pointerIdx int
+	updating   bool // guard: Refresh ↔ changed-callback recursion
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
 }
 
@@ -58,6 +61,23 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		Foreground(SelectionFG).
 		Bold(true))
 	p.list.SetHighlightFullLine(true)
+
+	// Move the pointer glyph to the newly selected row on navigation. Only the
+	// previously- and newly-selected rows are re-rendered (SetItemText does not
+	// fire a "changed" event, so no recursion).
+	p.list.SetChangedFunc(func(index int, _ string, _ string, _ rune) {
+		if p.updating || index < 0 || index >= len(p.entries) {
+			return
+		}
+		p.updating = true
+		old := p.pointerIdx
+		if old >= 0 && old < len(p.entries) && old != index {
+			p.list.SetItemText(old, formatHostRow(p.entries[old], p.rowWidth, false), "")
+		}
+		p.pointerIdx = index
+		p.list.SetItemText(index, formatHostRow(p.entries[index], p.rowWidth, true), "")
+		p.updating = false
+	})
 
 	p.list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
@@ -293,20 +313,31 @@ func (p *HostListPane) SelectedRenderText() string {
 	return main
 }
 
+// SetRowWidth sets the target row width used by the column formatter (test
+// seam; the default 44 matches the plan's host-pane max of 48 minus borders).
+func (p *HostListPane) SetRowWidth(width int) {
+	p.rowWidth = width
+}
+
 // Refresh re-reads the visible entries from the underlying hosts.List and
-// rebuilds the tview.List items.
+// rebuilds the tview.List items. The selected row gets the pointer glyph.
 func (p *HostListPane) Refresh() {
 	p.entries = p.hostList.Visible()
 	p.list.Clear()
 	p.refreshTitle()
 
 	selected := p.list.GetCurrentItem()
-	for _, e := range p.entries {
-		p.list.AddItem(formatHostLine(e), "", 0, nil)
+	if selected < 0 {
+		selected = 0
+	}
+	p.pointerIdx = selected
+	for i, e := range p.entries {
+		p.list.AddItem(formatHostRow(e, p.rowWidth, i == selected), "", 0, nil)
 	}
 	if len(p.entries) > 0 {
-		if selected < 0 || selected >= len(p.entries) {
+		if selected >= len(p.entries) {
 			selected = 0
+			p.pointerIdx = 0
 		}
 		p.list.SetCurrentItem(selected)
 	}
@@ -336,32 +367,69 @@ func scopeLabel(scope string) string {
 	}
 }
 
-// formatHostLine renders one host entry as a list item string with live dot
-// and source badge.
-func formatHostLine(e hosts.Entry) string {
-	liveDot := "  "
+// FormatHostRowForTest exposes the row formatter (tests only).
+func FormatHostRowForTest(e hosts.Entry, width int, selected bool) string {
+	return formatHostRow(e, width, selected)
+}
+
+// formatHostRow renders one host entry as a fixed-width, column-aligned row:
+//
+//	{pointer}{glyph} {name:truncated…} {address:right-aligned}
+//
+// The address column is high-priority: it never truncates; the name column
+// absorbs the width deficit with a tail ellipsis. Style tags are foreground-
+// only so tview's selected-row background fills the full line (defect #2).
+func formatHostRow(e hosts.Entry, width int, selected bool) string {
+	pointer := "  "
+	if selected {
+		pointer = GlyphPointer + " "
+	}
+	glyph := GlyphIdle
 	if e.Live {
-		liveDot = "[green]●[-] "
+		glyph = GlyphConnected
 	}
-
-	badge := fmt.Sprintf("[gray:black]%s[-]", e.Source)
+	addrW := 16 // IPv4 = 15 cols, Tailscale domain = 16 (§5.2)
+	nameW := width - runewidth.StringWidth(pointer) - 1 - 1 - addrW
+	if nameW < 4 {
+		nameW = 4
+	}
+	name := truncateEllipsis(e.Alias, nameW)
 	if e.AuthKind == "password" {
-		badge = fmt.Sprintf("[gray:black]%s [yellow]pw[-][-]", e.Source)
+		pw := " [yellow]pw[-]"
+		name = truncateEllipsis(e.Alias + pw, nameW)
 	}
-
-	hostInfo := e.Alias
-	if e.HostName != "" && e.HostName != e.Alias {
-		hostInfo = fmt.Sprintf("%-25s (%s)", e.Alias, e.HostName)
+	addr := e.HostName
+	if runewidth.StringWidth(addr) > addrW {
+		addr = runewidth.Truncate(addr, addrW, "…")
 	}
+	addr = padLeft(addr, addrW)
+	line := pointer + glyph + " " + name + " " + addr
+	return padRight(line, width)
+}
 
-	return fmt.Sprintf("%s%s %s", liveDot, padRight(hostInfo, 30), badge)
+func truncateEllipsis(s string, maxW int) string {
+	if runewidth.StringWidth(s) <= maxW {
+		return s
+	}
+	if maxW <= 1 {
+		return ""
+	}
+	return runewidth.Truncate(s, maxW-1, "…")
+}
+
+func padLeft(s string, width int) string {
+	w := runewidth.StringWidth(s)
+	if w >= width {
+		return s
+	}
+	return strings.Repeat(" ", width-w) + s
 }
 
 func padRight(s string, width int) string {
-	if len(s) >= width {
+	if runewidth.StringWidth(s) >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-runewidth.StringWidth(s))
 }
 
 // FocusFilter moves focus to the filter input field.

@@ -118,6 +118,59 @@ func TestHostListPaneSetSyncStatus(t *testing.T) {
 	}
 }
 
+func TestHostRowNeverClipsAddress(t *testing.T) {
+	// IPv4 (15 cols) and a 16-col Tailscale domain must survive intact; the
+	// NAME takes the truncation hit (defect #3 regression).
+	for _, addr := range []string{"104.250.1.2", "gitlab.corp.net"} {
+		row := tviewui.FormatHostRowForTest(hosts.Entry{
+			Alias: "gitlab-infrastructure-prod", HostName: addr,
+			Source: "file",
+		}, 34, false)
+		if !strings.Contains(row, addr) {
+			t.Errorf("address %q clipped in %q", addr, row)
+		}
+	}
+}
+
+func TestHostRowTailEllipsisOnName(t *testing.T) {
+	row := tviewui.FormatHostRowForTest(hosts.Entry{Alias: "gitlab-infrastructure-prod", HostName: "10.0.0.1", Source: "file"}, 34, false)
+	if !strings.Contains(row, "10.0.0.1") {
+		t.Errorf("ip missing: %q", row)
+	}
+	if !strings.Contains(row, "…") {
+		t.Errorf("expected ellipsis in %q", row)
+	}
+}
+
+func TestHostRowSelectedPointer(t *testing.T) {
+	row := tviewui.FormatHostRowForTest(hosts.Entry{Alias: "a", HostName: "1.2.3.4", Source: "file"}, 34, true)
+	if !strings.HasPrefix(row, tviewui.GlyphPointer) {
+		t.Errorf("selected row must start with pointer, got %q", row)
+	}
+	row2 := tviewui.FormatHostRowForTest(hosts.Entry{Alias: "a", HostName: "1.2.3.4", Source: "file"}, 34, false)
+	if strings.HasPrefix(row2, tviewui.GlyphPointer) {
+		t.Errorf("unselected row must not start with pointer, got %q", row2)
+	}
+}
+
+func TestHostRowStatusGlyphs(t *testing.T) {
+	live := tviewui.FormatHostRowForTest(hosts.Entry{Alias: "a", HostName: "1.2.3.4", Source: "file", Live: true}, 34, false)
+	if !strings.Contains(live, tviewui.GlyphConnected) {
+		t.Errorf("live row missing ●: %q", live)
+	}
+	idle := tviewui.FormatHostRowForTest(hosts.Entry{Alias: "a", HostName: "1.2.3.4", Source: "file"}, 34, false)
+	if !strings.Contains(idle, tviewui.GlyphIdle) {
+		t.Errorf("idle row missing ○: %q", idle)
+	}
+}
+
+func TestHostRowNoBackgroundTags(t *testing.T) {
+	row := tviewui.FormatHostRowForTest(hosts.Entry{Alias: "a", HostName: "1.2.3.4", Source: "file", Live: true}, 34, true)
+	if strings.Contains(row, ":black") {
+		t.Errorf("row must not contain background style tags (selection artifact): %q", row)
+	}
+}
+
 func TestHostListPaneRefreshCallbackTriggered(t *testing.T) {
 	pane := tviewui.NewHostListPane(sampleHostList())
 	refreshed := false
