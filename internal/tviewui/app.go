@@ -124,9 +124,9 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(content, 0, 1, true)
 
-	// Footer hotkey hint (fixed one-line bar at the bottom).
+	// Footer hotkey hints (two-row bar at the bottom).
 	a.footer = NewFooter()
-	a.root.AddItem(a.footer.Primitive(), 1, 0, false)
+	a.root.AddItem(a.footer.Primitive(), 2, 0, false)
 
 	// Pages for modal overlays (setup, quit).
 	a.overlay = tview.NewPages().
