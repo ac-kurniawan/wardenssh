@@ -16,7 +16,8 @@
     ]
   },
   "plugin": [
-    ".agents/plugins/graphify.js"
+    ".agents/plugins/graphify.js",
+    "superpowers@git+https://github.com/obra/superpowers.git"
   ]
 }
 
