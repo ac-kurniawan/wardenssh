@@ -243,3 +243,4 @@ The e2e harness (`e2e/`) drives the real binary via tmux against a live Vaultwar
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
+
