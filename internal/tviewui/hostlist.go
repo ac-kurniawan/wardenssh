@@ -133,12 +133,16 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 	})
 
 	// Filter card: bordered input (title "🔍 Filter [/]") + right-aligned scope
-	// badge with the per-scope host count. The badge lives outside the input's
-	// border so the input keeps its own rounded frame.
-	filterCard := tview.NewFlex().SetDirection(tview.FlexRow).
+	// badge with the per-scope host count. The badge sits to the RIGHT of the
+	// input (FlexColumn = one item per column = horizontal arrangement), so the
+	// fixed-width badge never consumes the input's height. The badge lives
+	// outside the input's border so the input keeps its own rounded frame.
+	filterCard := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(p.filter, 0, 1, true).
 		AddItem(p.scopeText, 20, 0, false)
 
+	// Outer flex stacks the filter card above the host list (FlexRow = one
+	// item per row = vertical arrangement).
 	p.flex = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(filterCard, 3, 0, true).
 		AddItem(p.list, 0, 1, false)

@@ -204,6 +204,48 @@ func TestFilterCardScopeBadge(t *testing.T) {
 	}
 }
 
+// TestFilterBarRenderedInLayout: the filter card must be visible in the pane's
+// layout (defect #1 regression). Drawing the pane to a simulation screen, the
+// filter's border title must appear. This catches the FlexRow-vs-FlexColumn
+// bug where the fixed-height scope badge crushed the filter to zero height.
+func TestFilterBarRenderedInLayout(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.Refresh()
+
+	ss := tcell.NewSimulationScreen("UTF-8")
+	if e := ss.Init(); e != nil {
+		t.Fatalf("init simulation screen: %v", e)
+	}
+	defer ss.Fini()
+	ss.SetSize(40, 12)
+	pane.Primitive().SetRect(0, 0, 40, 12)
+	pane.Primitive().Draw(ss)
+	ss.Show()
+
+	cells, w, h := ss.GetContents()
+	if w == 0 || h == 0 {
+		t.Fatal("simulation screen empty after draw")
+	}
+	text := renderSimText(cells, w, h)
+	if !strings.Contains(text, "Filter") {
+		t.Errorf("filter bar not rendered:\n%s", text)
+	}
+}
+
+func renderSimText(cells []tcell.SimCell, w, h int) string {
+	var sb strings.Builder
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			cell := cells[y*w+x]
+			for _, r := range cell.Runes {
+				sb.WriteRune(r)
+			}
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 func TestHostListPaneRefreshCallbackTriggered(t *testing.T) {
 	pane := tviewui.NewHostListPane(sampleHostList())
 	refreshed := false

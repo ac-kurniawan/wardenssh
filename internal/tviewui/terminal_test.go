@@ -207,3 +207,23 @@ func TestTerminalPaneTitleState(t *testing.T) {
 		t.Errorf("unfocused title = %q, want CONNECTED", pane.ActiveTitle())
 	}
 }
+
+// TestTerminalPaneUptimeRefreshes: the title's "Up:" telemetry must reflect
+// elapsed session time, not just the value computed at session start (defect:
+// the right pane always showed "Up: 0s"). Refreshing the title must recompute
+// from the session's start time.
+func TestTerminalPaneUptimeRefreshes(t *testing.T) {
+	pane := tviewui.NewTerminalPane(nil)
+	defer pane.Close()
+	key := tviewui.SessionKey("host-a", "file")
+	pane.SetSessionForTest(key, "host-a", "file")
+
+	// Move the session start back 90s, then refresh the title.
+	pane.SetSessionStartForTest(key, time.Now().Add(-90 * time.Second))
+	pane.RefreshActiveTitle()
+
+	title := pane.ActiveTitle()
+	if !strings.Contains(title, "Up: 1m30s") {
+		t.Errorf("title after refresh = %q, want Up: 1m30s", title)
+	}
+}

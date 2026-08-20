@@ -43,11 +43,16 @@ type TerminalPane struct {
 	pages  *tview.Pages
 	status *tview.TextView
 
-	mu          sync.Mutex
-	sessions    map[string]*terminalSession
-	order       []string // insertion order, for "most recent" selection
-	active      string   // key of the displayed session
-	testRunning bool
+	mu           sync.Mutex
+	sessions     map[string]*terminalSession
+	order        []string // insertion order, for "most recent" selection
+	active       string   // key of the displayed session
+	testRunning  bool
+	titleFocused bool // last SetSessionTitleState value (for the uptime ticker)
+
+	titleTicker *time.Ticker
+	stopTitle   chan struct{}
+	tickerOn    bool
 }
 
 // NewTerminalPane creates the terminal pane. The app reference is used for
@@ -217,11 +222,38 @@ func (p *TerminalPane) ActiveTitle() string {
 	return title
 }
 
+// SetSessionStartForTest rewinds a session's start time (tests only), so the
+// uptime telemetry can be exercised deterministically.
+func (p *TerminalPane) SetSessionStartForTest(key string, started time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if s, ok := p.sessions[key]; ok {
+		s.started = started
+	}
+}
+
 // SetSessionTitleState updates the displayed session's title state badge:
-// "ACTIVE SESSION" when the terminal has focus, "CONNECTED" otherwise.
+// "ACTIVE SESSION" when the terminal has focus, "CONNECTED" otherwise. The
+// focused flag is remembered so the uptime ticker can refresh the title.
 func (p *TerminalPane) SetSessionTitleState(focused bool) {
 	p.mu.Lock()
+	p.titleFocused = focused
 	active := p.active
+	s := p.sessions[active]
+	p.mu.Unlock()
+	if s == nil {
+		return
+	}
+	p.setSessionTitle(active, focused)
+}
+
+// RefreshActiveTitle recomputes the displayed session's title from the current
+// time, so "Up:" telemetry keeps ticking instead of freezing at session start.
+// Called by the 1s title ticker and directly by tests.
+func (p *TerminalPane) RefreshActiveTitle() {
+	p.mu.Lock()
+	active := p.active
+	focused := p.titleFocused
 	s := p.sessions[active]
 	p.mu.Unlock()
 	if s == nil {
@@ -350,7 +382,59 @@ func (p *TerminalPane) StartSSHFromCmd(entry hosts.Entry, cmd *exec.Cmd, env []s
 
 	p.pages.AddPage(pageName(key), term, true, true)
 	p.pages.SwitchToPage(pageName(key))
+	p.startTitleTicker()
 	return nil
+}
+
+// startTitleTicker launches (idempotent) a 1-second goroutine that refreshes
+// the active session's title, so the "Up:" uptime telemetry keeps ticking
+// while a session runs. Redraws are marshaled through the app (nil in tests).
+func (p *TerminalPane) startTitleTicker() {
+	p.mu.Lock()
+	if p.tickerOn {
+		p.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	p.stopTitle = stop
+	p.titleTicker = time.NewTicker(1 * time.Second)
+	p.tickerOn = true
+	p.mu.Unlock()
+
+	go func() {
+		for {
+			select {
+			case <-p.titleTicker.C:
+				p.mu.Lock()
+				hasSession := len(p.sessions) > 0
+				p.mu.Unlock()
+				if !hasSession {
+					continue
+				}
+				p.RefreshActiveTitle()
+				if p.app != nil {
+					p.app.QueueUpdateDraw(func() {})
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+// stopTitleTicker stops the uptime ticker goroutine (idempotent).
+func (p *TerminalPane) stopTitleTicker() {
+	p.mu.Lock()
+	p.tickerOn = false
+	if p.titleTicker != nil {
+		p.titleTicker.Stop()
+		p.titleTicker = nil
+	}
+	if p.stopTitle != nil {
+		close(p.stopTitle)
+		p.stopTitle = nil
+	}
+	p.mu.Unlock()
 }
 
 // Activate makes the given session the displayed one (yield-and-switch: select
@@ -428,6 +512,7 @@ func (p *TerminalPane) mostRecentUnlocked() string {
 
 // Close terminates all sessions and resets the pane to the status page.
 func (p *TerminalPane) Close() {
+	p.stopTitleTicker()
 	p.mu.Lock()
 	var backends []*PtyBackend
 	for _, s := range p.sessions {
