@@ -28,6 +28,7 @@ type HostListPane struct {
 	onDelete  func(hosts.Entry)
 	syncStatus string
 	focused    bool
+	filterFocused bool
 	rowWidth   int
 	pointerIdx int
 	updating   bool // guard: Refresh ↔ changed-callback recursion
@@ -90,13 +91,6 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 
 	p.list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
-		case tcell.KeyTab:
-			p.hostList.Tab()
-			p.Refresh()
-			if p.onScope != nil {
-				p.onScope()
-			}
-			return nil
 		case tcell.KeyCtrlR:
 			p.TriggerRefresh()
 			return nil
@@ -106,7 +100,7 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		case tcell.KeyCtrlE:
 			p.TriggerEdit()
 			return nil
-		case tcell.KeyCtrlD, tcell.KeyDelete:
+		case tcell.KeyDelete:
 			p.TriggerDelete()
 			return nil
 		case tcell.KeyEnter:
@@ -114,6 +108,20 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 				if e, ok := p.SelectedEntry(); ok {
 					p.onConnect(e)
 				}
+			}
+			return nil
+		}
+		if event.Rune() == 'j' {
+			cur := p.list.GetCurrentItem()
+			if cur < p.list.GetItemCount()-1 {
+				p.list.SetCurrentItem(cur + 1)
+			}
+			return nil
+		}
+		if event.Rune() == 'k' {
+			cur := p.list.GetCurrentItem()
+			if cur > 0 {
+				p.list.SetCurrentItem(cur - 1)
 			}
 			return nil
 		}
@@ -160,17 +168,8 @@ func (p *HostListPane) handleFilterKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyEnter:
 		p.TriggerConnect()
 		return nil
-	case tcell.KeyTab:
-		p.TabNext()
-		if p.onScope != nil {
-			p.onScope()
-		}
-		return nil
 	case tcell.KeyCtrlR:
 		p.TriggerRefresh()
-		return nil
-	case tcell.KeyCtrlD:
-		p.TriggerDelete()
 		return nil
 	case tcell.KeyEscape:
 		if p.filter.GetText() != "" {
@@ -186,6 +185,17 @@ func (p *HostListPane) handleFilterKey(event *tcell.EventKey) *tcell.EventKey {
 func (p *HostListPane) HandleFilterKey(event *tcell.EventKey) *tcell.EventKey {
 	return p.handleFilterKey(event)
 }
+
+// HandleListKey routes a key event through the list's input handler (tests).
+func (p *HostListPane) HandleListKey(event *tcell.EventKey) *tcell.EventKey {
+	if h := p.list.InputHandler(); h != nil {
+		h(event, func(tview.Primitive) {})
+	}
+	return event
+}
+
+// FilterFocused reports whether the filter input currently owns focus.
+func (p *HostListPane) FilterFocused() bool { return p.filterFocused }
 
 // Primitive returns the tview primitive for layout embedding.
 func (p *HostListPane) Primitive() tview.Primitive { return p.flex }
@@ -219,6 +229,9 @@ func (p *HostListPane) FilterTitle() string { return p.filter.GetTitle() }
 // line-weight — see ApplyRoundedBorders).
 func (p *HostListPane) SetFocused(focused bool) {
 	p.focused = focused
+	if !focused {
+		p.filterFocused = false
+	}
 	style := tcell.StyleDefault.Foreground(InactiveBorder)
 	if focused {
 		style = tcell.StyleDefault.Foreground(AccentColor)
@@ -472,7 +485,11 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-runewidth.StringWidth(s))
 }
 
-// FocusFilter moves focus to the filter input field.
+// FocusFilter moves focus to the filter input field and records it (the flag
+// makes '/'-focus testable without a running tview app).
 func (p *HostListPane) FocusFilter(app *tview.Application) {
-	app.SetFocus(p.filter)
+	p.filterFocused = true
+	if app != nil {
+		app.SetFocus(p.filter)
+	}
 }

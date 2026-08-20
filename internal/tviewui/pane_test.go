@@ -44,34 +44,49 @@ func TestAppEscInTerminalForwardsToTerminal(t *testing.T) {
 	}
 }
 
-// TestAppCtrlBTogglesBetweenPanes: Ctrl+B moves focus host<->terminal while a
-// session is running (and back).
-func TestAppCtrlBTogglesBetweenPanes(t *testing.T) {
+// TestAppTabFocusesTerminalAndCtrlBackslashReturns: per the revamp keymap,
+// Tab (hosts pane) moves focus into the terminal PTY and Ctrl+\ releases focus
+// back to the sidebar.
+func TestAppTabFocusesTerminalAndCtrlBackslashReturns(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
 
-	// No session: Ctrl+B does nothing (no terminal pane to switch to).
-	ev := app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
-	if ev != nil {
-		t.Fatalf("Ctrl+B with no session: event = %v, want nil", ev)
-	}
+	// No session: Tab stays on host list (nothing to focus).
+	ev := app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	if app.FocusedPane() != "host" {
-		t.Errorf("FocusedPane = %q, want host (no session)", app.FocusedPane())
+		t.Errorf("Tab with no session: FocusedPane = %q, want host", app.FocusedPane())
 	}
 
-	// Session running: Ctrl+B toggles.
+	// Session running: Tab moves into the terminal, Ctrl+\ returns.
 	app.TerminalPane().SetRunningForTest(true)
-	app.FocusTerminal()
-	ev = app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
-	if app.FocusedPane() != "host" {
-		t.Errorf("Ctrl+B in terminal: FocusedPane = %q, want host", app.FocusedPane())
-	}
-	_ = ev
-	ev = app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
+	ev = app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
 	if app.FocusedPane() != "terminal" {
-		t.Errorf("Ctrl+B in host: FocusedPane = %q, want terminal", app.FocusedPane())
+		t.Errorf("Tab: FocusedPane = %q, want terminal", app.FocusedPane())
 	}
 	_ = ev
+	ev = app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlBackslash, 0, tcell.ModNone))
+	if app.FocusedPane() != "host" {
+		t.Errorf("Ctrl+\\: FocusedPane = %q, want host", app.FocusedPane())
+	}
+	_ = ev
+}
+
+// TestAppCtrlBInHostOpensScopeModal: Ctrl+B no longer toggles panes — it opens
+// the scope switcher overlay (the revamp keymap).
+func TestAppCtrlBInHostOpensScopeModal(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	if app.InScopeModal() {
+		t.Fatal("precondition: not in scope modal")
+	}
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
+	if !app.InScopeModal() {
+		t.Fatal("Ctrl+B must open the scope modal")
+	}
+	app.CancelScopeModal()
+	if app.InScopeModal() {
+		t.Fatal("expected scope modal dismissed")
+	}
 }
 
 // TestAppEscInTerminalForwardsOtherKeys: keys other than Ctrl+B/Ctrl+C are

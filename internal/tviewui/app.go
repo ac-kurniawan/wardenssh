@@ -1377,21 +1377,22 @@ func (a *App) showHostListPane() {
 //     remote shell receives SIGINT. Every other key — including 'q', ESC, and
 //     letter keys — is forwarded to the terminal, so apps like vim/less
 //     receive their keys (ESC exits insert mode instead of stealing focus).
-//   - Host list focused: Escape (with empty filter) / 'q' / Ctrl+C open the
-//     quit confirmation modal (Q31/C). Escape with a non-empty filter clears
-//     the filter instead. Ctrl+B moves focus to the terminal when a session
-//     is running.
-//   - Setup / quit / disconnect / create modal: passed through so those modals handle
-//     their own keys.
+//   - Host list focused: Escape (with empty filter) / 'q' / Ctrl+C / Ctrl+Q
+//     open the quit confirmation modal (Q31/C). Escape with a non-empty filter
+//     clears the filter instead. Tab moves focus to the terminal when a session
+//     is running; Ctrl+B opens the scope switcher; '/' focuses the filter; '?'
+//     opens help; Ctrl+D disconnects a live selected host.
+//   - Setup / quit / disconnect / create / edit / delete / scope modal: passed
+//     through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
-	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate {
+	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inScope {
 		return event
 	}
 
 	// Terminal pane focused.
 	if a.termFocused && a.termPane.IsRunning() {
 		switch event.Key() {
-		case tcell.KeyCtrlB:
+		case tcell.KeyCtrlBackslash:
 			a.FocusHostList()
 			return nil
 		case tcell.KeyCtrlC:
@@ -1402,6 +1403,15 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 			return tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone)
+		case tcell.KeyCtrlD:
+			// Disconnect the active session (revamp keymap).
+			if alias, source, ok := a.termPane.ActiveEntry(); ok {
+				if e, found := a.findEntry(alias, source); found {
+					a.showDisconnectModal(e)
+					return nil
+				}
+			}
+			return event
 		default:
 			// Forward to the terminal.
 			return event
@@ -1426,13 +1436,43 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		a.RequestQuit()
 		return nil
 	}
-	if event.Key() == tcell.KeyCtrlB {
-		// Pane toggle: host <-> terminal. Without a session there is no
-		// terminal pane to switch to, so Ctrl+B is a no-op (still consumed).
+	if event.Key() == tcell.KeyCtrlQ {
+		a.RequestQuit()
+		return nil
+	}
+	switch event.Key() {
+	case tcell.KeyTab:
+		// Focus the terminal when a session is running (revamp keymap).
 		if a.termPane.IsRunning() {
 			a.FocusTerminal()
 		}
 		return nil
+	case tcell.KeyCtrlB:
+		a.showScopeModal()
+		return nil
+	case tcell.KeyCtrlD:
+		// Disconnect a live selected host (revamp keymap). Delete key handles
+		// connection removal; Ctrl+D is disconnect.
+		if e, ok := a.hostPane.SelectedEntry(); ok && e.Live {
+			a.showDisconnectModal(e)
+			return nil
+		}
+		return nil
+	}
+	if event.Rune() == '/' {
+		a.hostPane.FocusFilter(a.app)
+		return nil
 	}
 	return event
+}
+
+// findEntry looks up a host entry by alias+source (used by Ctrl+D disconnect
+// in terminal mode).
+func (a *App) findEntry(alias, source string) (hosts.Entry, bool) {
+	for _, e := range a.hostList.All() {
+		if e.Alias == alias && e.Source == source {
+			return e, true
+		}
+	}
+	return hosts.Entry{}, false
 }

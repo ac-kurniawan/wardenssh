@@ -1184,6 +1184,29 @@ func TestAppScopeModalSelectChangesScope(t *testing.T) {
 
 var _ = tcell.KeyCtrlB
 
+// TestAppCtrlQQuits: Ctrl+Q is a global safe-exit shortcut (revamp keymap).
+func TestAppCtrlQQuits(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
+	if !app.InQuitModal() {
+		t.Fatal("expected quit modal after Ctrl+Q")
+	}
+}
+
+// TestAppSlashFocusesFilter: '/' jumps to the filter search input (global).
+func TestAppSlashFocusesFilter(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	if app.HostPane().FilterFocused() {
+		t.Fatal("precondition: filter not focused")
+	}
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone))
+	if !app.HostPane().FilterFocused() {
+		t.Error("expected '/' to focus the filter input")
+	}
+}
+
 func TestApp_UpdateConnection_Refusals(t *testing.T) {
 	hl := hosts.NewList([]hosts.Entry{
 		{Alias: "live-server", HostName: "1.1.1.1", Source: "file", Live: true},

@@ -43,13 +43,22 @@ func TestHostListPaneFilterNarrows(t *testing.T) {
 	}
 }
 
-func TestHostListPaneTabCyclesScope(t *testing.T) {
+func TestHostListPaneJKMovesSelection(t *testing.T) {
 	pane := tviewui.NewHostListPane(sampleHostList())
-	before := pane.CurrentScope()
-	pane.TabNext()
-	after := pane.CurrentScope()
-	if before == after {
-		t.Errorf("Tab did not advance scope: before=%q after=%q", before, after)
+	pane.Refresh()
+	e, _ := pane.SelectedEntry()
+	if e.Alias != "prod-db-01" {
+		t.Fatalf("initial = %q", e.Alias)
+	}
+	pane.HandleListKey(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone))
+	e, _ = pane.SelectedEntry()
+	if e.Alias != "web-02" {
+		t.Errorf("after j = %q, want web-02", e.Alias)
+	}
+	pane.HandleListKey(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone))
+	e, _ = pane.SelectedEntry()
+	if e.Alias != "prod-db-01" {
+		t.Errorf("after k = %q, want prod-db-01", e.Alias)
 	}
 }
 
