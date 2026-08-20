@@ -168,6 +168,19 @@ func (a *App) Run() error {
 	return a.app.Run()
 }
 
+// SetScreenForTest injects a simulation screen into the tview application
+// (tests only; mirrors tview.Application.SetScreen before Run).
+func (a *App) SetScreenForTest(screen tcell.Screen) {
+	_ = a.app.SetScreen(screen)
+}
+
+// StopForTest stops the running tview application (tests only).
+func (a *App) StopForTest() { a.app.Stop() }
+
+// ShowTerminalPaneForTest puts the terminal pane into the layout and focuses
+// it (tests only; mirrors showTerminalPane).
+func (a *App) ShowTerminalPaneForTest() { a.showTerminalPane() }
+
 // HostPane returns the host list pane.
 func (a *App) HostPane() *HostListPane { return a.hostPane }
 
@@ -1407,18 +1420,19 @@ func (a *App) showHostListPane() {
 // the focused widget sees the event, so this handler decides what the app owns
 // vs. what gets forwarded to the embedded terminal.
 //
-//   - Terminal pane focused (session running): only Ctrl+B and Ctrl+C are app
-//     keys. Ctrl+B moves focus to the host list (the session keeps running).
-//     Ctrl+C copies an active selection, otherwise it is cloned so tview's
-//     built-in "Ctrl+C stops the app" (application.go) does not fire and the
-//     remote shell receives SIGINT. Every other key — including 'q', ESC, and
-//     letter keys — is forwarded to the terminal, so apps like vim/less
-//     receive their keys (ESC exits insert mode instead of stealing focus).
+//   - Terminal pane focused (session running): Ctrl+B / Ctrl+\ move focus to
+//     the host list (the session keeps running). Ctrl+C copies an active
+//     selection, otherwise it is cloned so tview's built-in "Ctrl+C stops the
+//     app" (application.go) does not fire and the remote shell receives SIGINT.
+//     Every other key — including 'q', ESC, and letter keys — is forwarded to
+//     the terminal, so apps like vim/less receive their keys (ESC exits insert
+//     mode instead of stealing focus).
 //   - Host list focused: Escape (with empty filter) / 'q' / Ctrl+C / Ctrl+Q
 //     open the quit confirmation modal (Q31/C). Escape with a non-empty filter
-//     clears the filter instead. Tab moves focus to the terminal when a session
-//     is running; Ctrl+B opens the scope switcher; '/' focuses the filter; '?'
-//     opens help; Ctrl+D disconnects a live selected host.
+//     clears the filter instead. Tab / Ctrl+B move focus to the terminal when a
+//     session is running; Ctrl+B with no session opens the scope switcher; '/'
+//     focuses the filter; '?' opens help; Ctrl+D disconnects a live selected
+//     host.
 //   - Setup / quit / disconnect / create / edit / delete / scope modal: passed
 //     through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
@@ -1429,7 +1443,7 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 	// Terminal pane focused.
 	if a.termFocused && a.termPane.IsRunning() {
 		switch event.Key() {
-		case tcell.KeyCtrlBackslash:
+		case tcell.KeyCtrlB, tcell.KeyCtrlBackslash:
 			a.FocusHostList()
 			return nil
 		case tcell.KeyCtrlC:
@@ -1485,7 +1499,13 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		}
 		return nil
 	case tcell.KeyCtrlB:
-		a.showScopeModal()
+		// Ctrl+B toggles to the terminal when a session runs; with no session
+		// there is no pane to switch to, so it opens the scope switcher.
+		if a.termPane.IsRunning() {
+			a.FocusTerminal()
+		} else {
+			a.showScopeModal()
+		}
 		return nil
 	case tcell.KeyCtrlD:
 		// Disconnect a live selected host (revamp keymap). Delete key handles

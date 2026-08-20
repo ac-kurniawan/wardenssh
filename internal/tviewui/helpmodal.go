@@ -42,8 +42,8 @@ func helpText(mode string) string {
 	host := key("[↑/↓] / [j] / [k]") + " Select host\n" +
 		key("[Enter]") + " Connect / switch session\n" +
 		key("[Tab]") + "     Focus terminal PTY\n" +
+		key("[Ctrl+B]") + "   Focus terminal (or scope switcher when idle)\n" +
 		key("[/]") + "       Focus filter search\n" +
-		key("[Ctrl+B]") + "     Scope switcher\n" +
 		key("[Ctrl+N]") + "     New connection\n" +
 		key("[Ctrl+E]") + "     Edit connection\n" +
 		key("[Delete]") + "    Delete connection\n" +
@@ -51,11 +51,11 @@ func helpText(mode string) string {
 		key("[?]") + "         This help\n" +
 		key("[Ctrl+Q]") + "     Quit WardenSSH"
 	terminal := key("[Ctrl+\\]") +
+		" / " + key("[Ctrl+B]") +
 		"   Focus sidebar (host list)\n" +
 		key("[Ctrl+Shift+C]") + " Copy selection\n" +
 		key("[Ctrl+C]") + "    Copy / SIGINT\n" +
 		key("[Ctrl+D]") + "    Disconnect session\n" +
-		key("[Ctrl+B]") + "    Scope switcher\n" +
 		key("[?]") + "          This help\n" +
 		key("[Ctrl+Q]") + "    Quit WardenSSH"
 	if mode == "terminal" {

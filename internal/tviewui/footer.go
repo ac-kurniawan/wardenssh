@@ -25,8 +25,8 @@ func NewFooter() *Footer {
 // Primitive returns the tview primitive for layout embedding.
 func (f *Footer) Primitive() tview.Primitive { return f.view }
 
-// key wraps a key name in a violet key tag. The bracket contents are escaped so
-// tview's tag parser does not swallow key labels like "[j]"/"[/]".
+// keyTag wraps a key name in a violet key tag. The bracket contents are escaped
+// so tview's tag parser does not swallow key labels like "[j]"/"[/]".
 func keyTag(k string) string {
 	return "[#A855F7]" + tview.Escape(k) + "[-]"
 }
@@ -34,14 +34,14 @@ func keyTag(k string) string {
 // SetMode updates the hint text: "host" shows host-list bindings, anything
 // else shows the terminal bindings. Global line is shared.
 func (f *Footer) SetMode(mode string) {
-	global := keyTag("[?]") + " Help  " + keyTag("[/]") + " Filter  " + keyTag("[Ctrl+B]") + " Scopes  " + keyTag("[Ctrl+Q]") + " Quit"
+	global := keyTag("[?]") + " Help  " + keyTag("[/]") + " Filter  " + keyTag("[Ctrl+R]") + " Sync  " + keyTag("[Ctrl+Q]") + " Quit"
 	if mode == "terminal" {
 		f.view.SetText(
-			keyTag("[Ctrl+\\]") + " Sidebar  " + keyTag("[Ctrl+Shift+C]") + " Copy  " + keyTag("[Ctrl+D]") + " Disconnect\n" + global)
+			keyTag("[Ctrl+\\]") + "/" + keyTag("[Ctrl+B]") + " Sidebar  " + keyTag("[Ctrl+Shift+C]") + " Copy  " + keyTag("[Ctrl+D]") + " Disconnect\n" + global)
 		return
 	}
 	f.view.SetText(
-		keyTag("[↑/↓]/[j]/[k]") + " Select  " + keyTag("[Enter]") + " Connect  " + keyTag("[Tab]") + " Terminal\n" + global)
+		keyTag("[↑/↓]/[j]/[k]") + " Select  " + keyTag("[Enter]") + " Connect  " + keyTag("[Tab]") + " Terminal  " + keyTag("[Ctrl+N]") + " New  " + keyTag("[Ctrl+E]") + " Edit\n" + global)
 }
 
 // Text returns the rendered footer text (used in tests).

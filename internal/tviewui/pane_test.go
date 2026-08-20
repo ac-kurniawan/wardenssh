@@ -71,8 +71,8 @@ func TestAppTabFocusesTerminalAndCtrlBackslashReturns(t *testing.T) {
 	_ = ev
 }
 
-// TestAppCtrlBInHostOpensScopeModal: Ctrl+B no longer toggles panes — it opens
-// the scope switcher overlay (the revamp keymap).
+// TestAppCtrlBInHostOpensScopeModal: Ctrl+B with NO session opens the scope
+// switcher overlay (there is no pane to toggle to).
 func TestAppCtrlBInHostOpensScopeModal(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
@@ -86,6 +86,29 @@ func TestAppCtrlBInHostOpensScopeModal(t *testing.T) {
 	app.CancelScopeModal()
 	if app.InScopeModal() {
 		t.Fatal("expected scope modal dismissed")
+	}
+}
+
+// TestAppCtrlBTogglesWhenSessionRunning: with a session running, Ctrl+B toggles
+// host<->terminal in BOTH directions (regression: terminal-mode Ctrl+B was
+// forwarded to the remote shell, so the user could never get back to the list).
+func TestAppCtrlBTogglesWhenSessionRunning(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.TerminalPane().SetRunningForTest(true)
+
+	// Host -> terminal.
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
+	if app.FocusedPane() != "terminal" {
+		t.Errorf("Ctrl+B host: FocusedPane = %q, want terminal", app.FocusedPane())
+	}
+	// Terminal -> host.
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
+	if app.FocusedPane() != "host" {
+		t.Errorf("Ctrl+B terminal: FocusedPane = %q, want host", app.FocusedPane())
+	}
+	if app.InScopeModal() {
+		t.Error("Ctrl+B with a session must not open the scope modal")
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 func TestFooterHostModeHints(t *testing.T) {
 	f := tviewui.NewFooter()
 	text := f.Text()
-	for _, want := range []string{"Select", "Connect", "Terminal", "Filter", "Scopes", "Quit"} {
+	for _, want := range []string{"Select", "Connect", "Terminal", "New", "Edit", "Quit"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("host footer %q missing %q", text, want)
 		}
@@ -28,7 +28,7 @@ func TestFooterSwitchesToTerminalMode(t *testing.T) {
 	f := tviewui.NewFooter()
 	f.SetMode("terminal")
 	text := f.Text()
-	for _, want := range []string{"Ctrl+\\", "Ctrl+D", "Copy"} {
+	for _, want := range []string{"Ctrl+\\", "Ctrl+B", "Ctrl+D", "Copy"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("terminal footer %q missing %q", text, want)
 		}
