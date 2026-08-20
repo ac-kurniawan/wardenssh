@@ -97,6 +97,22 @@ func (l *List) Visible() []Entry {
 	return out
 }
 
+// CountInScope returns the number of launchable entries in scope, ignoring the
+// active filter (used for the scope badge counter).
+func (l *List) CountInScope(scope string) int {
+	n := 0
+	for _, e := range l.entries {
+		if e.HostName == "" {
+			continue
+		}
+		if scope != "" && e.Source != scope {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // All returns every entry regardless of the current scope/filter — used by the
 // TUI to detect any live session across all scopes for the quit-confirmation
 // modal (Q31/C) and by kill-all to clear all live flags.

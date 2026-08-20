@@ -11,12 +11,13 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 )
 
-// HostListPane is the left pane: a fuzzy filter input + a tview.List of hosts.
-// It wraps the existing hosts.List (pure logic) and renders entries with source
-// badges and live green dots.
+// HostListPane is the left pane: a bounded fuzzy filter card + a tview.List of
+// hosts. It wraps the existing hosts.List (pure logic) and renders entries with
+// status glyphs, a selection pointer, and a guaranteed-width address column.
 type HostListPane struct {
 	hostList   *hosts.List
 	filter     *tview.InputField
+	scopeText  *tview.TextView
 	list       *tview.List
 	flex       *tview.Flex
 	onConnect func(hosts.Entry)
@@ -30,6 +31,8 @@ type HostListPane struct {
 	rowWidth   int
 	pointerIdx int
 	updating   bool // guard: Refresh ↔ changed-callback recursion
+	matchCount int
+	scopeCount int
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
 }
 
@@ -38,15 +41,21 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 	p := &HostListPane{
 		hostList: hl,
 		filter:   tview.NewInputField(),
+		scopeText: tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight),
 		list:     tview.NewList(),
 		rowWidth: 44,
 	}
-	p.filter.SetLabel("Filter: ").
+	p.filter.SetLabel("> ").
 		SetFieldBackgroundColor(tcell.Color236).
 		SetChangedFunc(func(text string) {
 			p.hostList.SetFilter(text)
 			p.Refresh()
 		})
+	// Border + title belong to the Box superclass; set them separately so the
+	// chain returns InputField where needed (SetBorder returns *Box).
+	p.filter.SetBorder(true)
+	p.filter.SetTitle(" 🔍 Filter [/] ")
+	p.filter.SetTitleAlign(tview.AlignLeft)
 
 	p.filter.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		return p.handleFilterKey(event)
@@ -115,8 +124,15 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		return event
 	})
 
+	// Filter card: bordered input (title "🔍 Filter [/]") + right-aligned scope
+	// badge with the per-scope host count. The badge lives outside the input's
+	// border so the input keeps its own rounded frame.
+	filterCard := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(p.filter, 0, 1, true).
+		AddItem(p.scopeText, 20, 0, false)
+
 	p.flex = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(p.filter, 1, 0, true).
+		AddItem(filterCard, 3, 0, true).
 		AddItem(p.list, 0, 1, false)
 	return p
 }
@@ -184,6 +200,19 @@ func (p *HostListPane) SetOnScopeChange(fn func()) { p.onScope = fn }
 func (p *HostListPane) SetSyncStatus(status string) {
 	p.syncStatus = status
 }
+
+// MatchCount returns the number of visible (filtered) entries in scope.
+func (p *HostListPane) MatchCount() int { return p.matchCount }
+
+// ScopeCount returns the total number of launchable entries in the current
+// scope, ignoring the filter (scope badge counter).
+func (p *HostListPane) ScopeCount() int { return p.scopeCount }
+
+// ScopeLabel returns the friendly current-scope label (e.g. "~/.ssh/config").
+func (p *HostListPane) ScopeLabel() string { return scopeLabel(p.hostList.Scope()) }
+
+// FilterTitle returns the filter card's border title (used in tests).
+func (p *HostListPane) FilterTitle() string { return p.filter.GetTitle() }
 
 // SetFocused updates the pane's border color to reflect keyboard focus:
 // accent when focused, inactive otherwise (focus is color-coded, never
@@ -323,6 +352,9 @@ func (p *HostListPane) SetRowWidth(width int) {
 // rebuilds the tview.List items. The selected row gets the pointer glyph.
 func (p *HostListPane) Refresh() {
 	p.entries = p.hostList.Visible()
+	p.matchCount = len(p.entries)
+	p.scopeCount = p.hostList.CountInScope(p.hostList.Scope())
+	p.updateScopeBadge()
 	p.list.Clear()
 	p.refreshTitle()
 
@@ -341,6 +373,14 @@ func (p *HostListPane) Refresh() {
 		}
 		p.list.SetCurrentItem(selected)
 	}
+}
+
+// updateScopeBadge renders the right-aligned scope badge next to the filter:
+// "Scope: <label> (<count>)" with the match counter in amber.
+func (p *HostListPane) updateScopeBadge() {
+	label := p.ScopeLabel()
+	p.scopeText.SetText(fmt.Sprintf("[#38BDF8]Scope: %s (%d)[-]  [#F59E0B]%d matches[-]",
+		label, p.scopeCount, p.matchCount))
 }
 
 // refreshTitle rebuilds the list title from the current scope and sync status.

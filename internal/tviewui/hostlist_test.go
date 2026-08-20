@@ -171,6 +171,30 @@ func TestHostRowNoBackgroundTags(t *testing.T) {
 	}
 }
 
+func TestFilterCardBoundedAndCounted(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.SetFilter("prod")
+	pane.Refresh()
+	if pane.MatchCount() != 1 {
+		t.Errorf("MatchCount = %d, want 1", pane.MatchCount())
+	}
+	if pane.ScopeCount() != 3 {
+		t.Errorf("ScopeCount = %d, want 3", pane.ScopeCount())
+	}
+	if !strings.Contains(pane.FilterTitle(), "Filter") {
+		t.Errorf("filter title missing label: %q", pane.FilterTitle())
+	}
+}
+
+func TestFilterCardScopeBadge(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.SetScope("file")
+	pane.Refresh()
+	if !strings.Contains(pane.ScopeLabel(), "~/.ssh/config") {
+		t.Errorf("ScopeLabel = %q, want friendly file label", pane.ScopeLabel())
+	}
+}
+
 func TestHostListPaneRefreshCallbackTriggered(t *testing.T) {
 	pane := tviewui.NewHostListPane(sampleHostList())
 	refreshed := false

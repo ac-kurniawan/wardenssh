@@ -370,3 +370,25 @@ func TestListReplaceEntry(t *testing.T) {
 		t.Errorf("expected 3 entries after replacing non-existent, got %d", len(l.All()))
 	}
 }
+
+func TestListCountInScope(t *testing.T) {
+	l := hosts.NewList([]hosts.Entry{
+		{Alias: "a", HostName: "1.1.1.1", Source: "file"},
+		{Alias: "b", HostName: "2.2.2.2", Source: "file"},
+		{Alias: "c", HostName: "3.3.3.3", Source: "vw:personal"},
+		{Alias: "d", Source: "file"}, // unlaunchable — excluded
+	})
+	if got := l.CountInScope(""); got != 3 {
+		t.Errorf("CountInScope(all) = %d, want 3", got)
+	}
+	if got := l.CountInScope("file"); got != 2 {
+		t.Errorf("CountInScope(file) = %d, want 2", got)
+	}
+	if got := l.CountInScope("vw:personal"); got != 1 {
+		t.Errorf("CountInScope(vw:personal) = %d, want 1", got)
+	}
+	l.SetFilter("a")
+	if got := l.CountInScope(""); got != 3 {
+		t.Errorf("CountInScope must ignore filter, got %d", got)
+	}
+}
