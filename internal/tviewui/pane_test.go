@@ -89,26 +89,22 @@ func TestAppCtrlBInHostOpensScopeModal(t *testing.T) {
 	}
 }
 
-// TestAppCtrlBTogglesWhenSessionRunning: with a session running, Ctrl+B toggles
-// host<->terminal in BOTH directions (regression: terminal-mode Ctrl+B was
-// forwarded to the remote shell, so the user could never get back to the list).
-func TestAppCtrlBTogglesWhenSessionRunning(t *testing.T) {
+// TestAppCtrlBAlwaysOpensScopeModal: Ctrl+B opens the scope switcher regardless
+// of whether a session is running — it is the scope hotkey, NOT a pane toggle
+// (regression: Ctrl+B was overloaded for pane-switching, orphaning the scope
+// switcher while a session ran).
+func TestAppCtrlBAlwaysOpensScopeModal(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
 	app.TerminalPane().SetRunningForTest(true)
 
-	// Host -> terminal.
 	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
-	if app.FocusedPane() != "terminal" {
-		t.Errorf("Ctrl+B host: FocusedPane = %q, want terminal", app.FocusedPane())
+	if !app.InScopeModal() {
+		t.Fatal("Ctrl+B must open the scope modal even with a session running")
 	}
-	// Terminal -> host.
-	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
-	if app.FocusedPane() != "host" {
-		t.Errorf("Ctrl+B terminal: FocusedPane = %q, want host", app.FocusedPane())
-	}
+	app.CancelScopeModal()
 	if app.InScopeModal() {
-		t.Error("Ctrl+B with a session must not open the scope modal")
+		t.Fatal("expected scope modal dismissed")
 	}
 }
 
