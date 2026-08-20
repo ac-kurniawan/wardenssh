@@ -1,4 +1,4 @@
-# WardenSSH
+# WardenSSH 🛡️
 
 > **Cross-Platform SSH Management TUI with native Bitwarden & Vaultwarden Integration**
 
