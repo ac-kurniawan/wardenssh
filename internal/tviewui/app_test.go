@@ -1207,6 +1207,24 @@ func TestAppSlashFocusesFilter(t *testing.T) {
 	}
 }
 
+// TestAppQuestionOpensHelp: '?' opens the interactive help sheet; closing it
+// returns focus to the host list.
+func TestAppQuestionOpensHelp(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	if app.InHelp() {
+		t.Fatal("precondition: help closed")
+	}
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone))
+	if !app.InHelp() {
+		t.Fatal("expected '?' to open help")
+	}
+	app.CancelHelpModal()
+	if app.InHelp() {
+		t.Fatal("expected help dismissed after cancel")
+	}
+}
+
 func TestApp_UpdateConnection_Refusals(t *testing.T) {
 	hl := hosts.NewList([]hosts.Entry{
 		{Alias: "live-server", HostName: "1.1.1.1", Source: "file", Live: true},

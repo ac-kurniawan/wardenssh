@@ -48,6 +48,7 @@ type App struct {
 	editModal   *CreateModal
 	deleteModal *DeleteModal
 	scopeModal  *ScopeModal
+	helpModal   *HelpModal
 	footer      *Footer
 
 	root    *tview.Flex
@@ -63,6 +64,7 @@ type App struct {
 	inEdit        bool
 	inDelete      bool
 	inScope       bool
+	inHelp        bool
 	sshConfigPath string
 	termFocused   bool // focus is on the terminal pane (vs. the host list)
 	pasteEnabled  bool // bracketed paste is enabled on the tview app
@@ -489,6 +491,39 @@ func (a *App) CancelScopeModal() {
 	a.inScope = false
 	a.overlay.RemovePage("scope")
 	a.app.SetFocus(a.hostPane.Primitive())
+}
+
+// InHelp reports whether the help sheet is open.
+func (a *App) InHelp() bool { return a.inHelp }
+
+// showHelpModal opens the context-aware help sheet ('?').
+func (a *App) showHelpModal() {
+	if a.inHelp {
+		return
+	}
+	mode := "host"
+	if a.termFocused {
+		mode = "terminal"
+	}
+	a.inHelp = true
+	a.helpModal = NewHelpModal(mode)
+	a.helpModal.SetOnClose(a.CancelHelpModal)
+	a.overlay.AddPage("help", a.helpModal.Primitive(), true, true)
+	a.app.SetFocus(a.helpModal.Primitive())
+}
+
+// CancelHelpModal closes the help sheet.
+func (a *App) CancelHelpModal() {
+	if !a.inHelp {
+		return
+	}
+	a.inHelp = false
+	a.overlay.RemovePage("help")
+	if a.termFocused {
+		a.app.SetFocus(a.termPane.Primitive())
+	} else {
+		a.app.SetFocus(a.hostPane.Primitive())
+	}
 }
 
 // ShowScopeModalForTest opens the scope switcher (tests only; mirrors Ctrl+B).
@@ -1385,7 +1420,7 @@ func (a *App) showHostListPane() {
 //   - Setup / quit / disconnect / create / edit / delete / scope modal: passed
 //     through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
-	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inScope {
+	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inScope || a.inHelp {
 		return event
 	}
 
@@ -1461,6 +1496,10 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 	}
 	if event.Rune() == '/' {
 		a.hostPane.FocusFilter(a.app)
+		return nil
+	}
+	if event.Rune() == '?' {
+		a.showHelpModal()
 		return nil
 	}
 	return event
