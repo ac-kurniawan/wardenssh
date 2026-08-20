@@ -189,6 +189,7 @@ func (a *App) FocusTerminal() {
 	a.footer.SetMode("terminal")
 	a.hostPane.SetFocused(false)
 	a.termPane.SetFocused(true)
+	a.termPane.SetSessionTitleState(true)
 	a.app.SetFocus(a.termPane.Primitive())
 }
 
@@ -200,6 +201,7 @@ func (a *App) FocusHostList() {
 	a.footer.SetMode("host")
 	a.hostPane.SetFocused(true)
 	a.termPane.SetFocused(false)
+	a.termPane.SetSessionTitleState(false)
 	a.app.SetFocus(a.hostPane.Primitive())
 }
 

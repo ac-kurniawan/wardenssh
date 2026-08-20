@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/blacknon/tvxterm"
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
@@ -21,11 +23,14 @@ func SessionKey(alias, source string) string {
 
 // terminalSession is one running ssh session with its own terminal view + PTY.
 type terminalSession struct {
-	key     string
-	alias   string
-	source  string
-	view    tview.Primitive
-	backend *PtyBackend
+	key       string
+	alias     string
+	source    string
+	host      string
+	started   time.Time
+	viewTitle string
+	view      tview.Primitive
+	backend   *PtyBackend
 }
 
 // TerminalPane is the right pane: a tview.Pages hosting one tvxterm.View per
@@ -152,10 +157,104 @@ func (p *TerminalPane) ActiveEntry() (alias, source string, ok bool) {
 // backend (tests only), making it the active session.
 func (p *TerminalPane) SetSessionForTest(key, alias, source string) {
 	p.mu.Lock()
-	p.sessions[key] = &terminalSession{key: key, alias: alias, source: source}
+	p.sessions[key] = &terminalSession{
+		key: key, alias: alias, source: source,
+		host: "1.2.3.4", started: time.Now(),
+	}
 	p.order = append(p.order, key)
 	p.active = key
 	p.mu.Unlock()
+	p.setSessionTitle(key, false)
+}
+
+// FormatSessionTitleForTest exposes the session-title formatter (tests only).
+func FormatSessionTitleForTest(alias, host, state string, up time.Duration) string {
+	return formatSessionTitle(alias, host, state, up)
+}
+
+// formatSessionTitle composes the terminal pane title: "💻 alias (host)
+// [CONNECTED/ACTIVE SESSION] · Up: <elapsed>". The host is tail-truncated so a
+// long address never clips the state badge.
+func formatSessionTitle(alias, host, state string, up time.Duration) string {
+	addr := host
+	if runewidth.StringWidth(addr) > 30 {
+		addr = runewidth.Truncate(addr, 30, "…")
+	}
+	upStr := formatUptime(up)
+	return fmt.Sprintf("💻 %s (%s) [%s] · Up: %s", alias, addr, state, upStr)
+}
+
+// formatUptime renders a duration compactly: "0s", "1m30s", "14d 6h".
+func formatUptime(up time.Duration) string {
+	total := int64(up.Seconds())
+	if total < 0 {
+		total = 0
+	}
+	days := total / 86400
+	hours := (total % 86400) / 3600
+	mins := (total % 3600) / 60
+	secs := total % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh%dm", hours, mins)
+	case mins > 0:
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	default:
+		return fmt.Sprintf("%ds", secs)
+	}
+}
+
+// ActiveTitle returns the title of the displayed session (used in tests).
+func (p *TerminalPane) ActiveTitle() string {
+	p.mu.Lock()
+	var title string
+	if s, ok := p.sessions[p.active]; ok {
+		title = s.viewTitle
+	}
+	p.mu.Unlock()
+	return title
+}
+
+// SetSessionTitleState updates the displayed session's title state badge:
+// "ACTIVE SESSION" when the terminal has focus, "CONNECTED" otherwise.
+func (p *TerminalPane) SetSessionTitleState(focused bool) {
+	p.mu.Lock()
+	active := p.active
+	s := p.sessions[active]
+	p.mu.Unlock()
+	if s == nil {
+		return
+	}
+	p.setSessionTitle(active, focused)
+}
+
+// setSessionTitle writes the mockup title onto a session's terminal view.
+// Callers may hold p.mu; viewTitle is updated under the lock.
+func (p *TerminalPane) setSessionTitle(key string, focused bool) {
+	p.mu.Lock()
+	s := p.sessions[key]
+	if s == nil {
+		p.mu.Unlock()
+		return
+	}
+	state := "CONNECTED"
+	if focused {
+		state = "ACTIVE SESSION"
+	}
+	up := time.Duration(0)
+	if s.started.UnixNano() != 0 {
+		up = time.Now().Sub(s.started)
+	}
+	s.viewTitle = formatSessionTitle(s.alias, s.host, state, up)
+	title := s.viewTitle
+	view := s.view
+	p.mu.Unlock()
+
+	if b, ok := view.(*terminalView); ok {
+		b.SetTitle(" " + title + " ")
+	}
 }
 
 // SetSessionViewForTest attaches a terminal view to an already registered
@@ -211,6 +310,7 @@ func (p *TerminalPane) StartSSHFromCmd(entry hosts.Entry, cmd *exec.Cmd, env []s
 	p.mu.Unlock()
 
 	term := newTerminalView(p.app, entry.Alias)
+	started := time.Now()
 
 	backend, err := NewPtyBackend(cmd, 80, 24)
 	if err != nil {
@@ -239,11 +339,14 @@ func (p *TerminalPane) StartSSHFromCmd(entry hosts.Entry, cmd *exec.Cmd, env []s
 	p.mu.Lock()
 	p.sessions[key] = &terminalSession{
 		key: key, alias: entry.Alias, source: entry.Source,
+		host: entry.HostName, started: started,
 		view: term, backend: backend,
 	}
 	p.order = append(p.order, key)
 	p.active = key
 	p.mu.Unlock()
+
+	p.setSessionTitle(key, false)
 
 	p.pages.AddPage(pageName(key), term, true, true)
 	p.pages.SwitchToPage(pageName(key))
