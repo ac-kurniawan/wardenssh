@@ -89,22 +89,61 @@ func TestAppCtrlBInHostOpensScopeModal(t *testing.T) {
 	}
 }
 
-// TestAppCtrlBAlwaysOpensScopeModal: Ctrl+B opens the scope switcher regardless
-// of whether a session is running — it is the scope hotkey, NOT a pane toggle
-// (regression: Ctrl+B was overloaded for pane-switching, orphaning the scope
-// switcher while a session ran).
-func TestAppCtrlBAlwaysOpensScopeModal(t *testing.T) {
+// TestAppCtrlSOpensScopeModalAlways: Ctrl+S ALWAYS opens the scope switcher
+// modal whether a session is running or not.
+func TestAppCtrlSOpensScopeModalAlways(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
 	app.TerminalPane().SetRunningForTest(true)
 
-	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlS, 0, tcell.ModNone))
 	if !app.InScopeModal() {
-		t.Fatal("Ctrl+B must open the scope modal even with a session running")
+		t.Fatal("Ctrl+S must open the scope modal even with a session running")
 	}
 	app.CancelScopeModal()
 	if app.InScopeModal() {
 		t.Fatal("expected scope modal dismissed")
+	}
+}
+
+// TestAppCtrlBTogglesWhenSessionRunning: with a session running, Ctrl+B toggles
+// host<->terminal in BOTH directions.
+func TestAppCtrlBTogglesWhenSessionRunning(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.TerminalPane().SetRunningForTest(true)
+
+	// Host -> terminal.
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
+	if app.FocusedPane() != "terminal" {
+		t.Errorf("Ctrl+B host: FocusedPane = %q, want terminal", app.FocusedPane())
+	}
+	// Terminal -> host.
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlB, 0, tcell.ModNone))
+	if app.FocusedPane() != "host" {
+		t.Errorf("Ctrl+B terminal: FocusedPane = %q, want host", app.FocusedPane())
+	}
+}
+
+// TestAppCtrlBackslashWindowsEncoding: on Windows console, Ctrl+\ may arrive as
+// KeyRune '\', '|', or 0x1c with ModCtrl. isCtrlBackslash must handle all of them.
+func TestAppCtrlBackslashWindowsEncoding(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	app.TerminalPane().SetRunningForTest(true)
+	app.FocusTerminal()
+
+	// Windows console synthesizes Ctrl+\ as KeyRune '|' with ModCtrl
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '|', tcell.ModCtrl))
+	if app.FocusedPane() != "host" {
+		t.Errorf("Ctrl+\\ with '|' rune: FocusedPane = %q, want host", app.FocusedPane())
+	}
+
+	app.FocusTerminal()
+	// Windows console synthesizes Ctrl+\ as KeyRune '\' with ModCtrl
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '\\', tcell.ModCtrl))
+	if app.FocusedPane() != "host" {
+		t.Errorf("Ctrl+\\ with '\\' rune: FocusedPane = %q, want host", app.FocusedPane())
 	}
 }
 

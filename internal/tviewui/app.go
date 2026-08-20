@@ -1424,23 +1424,39 @@ func (a *App) showHostListPane() {
 	a.FocusHostList()
 }
 
+// isCtrlBackslash checks whether a key event represents Ctrl+\ across platforms.
+// On Unix/VT terminals this is tcell.KeyCtrlBackslash (or Key(28)). On Windows
+// Console (console_win.go) control characters with backslash are synthesized
+// as KeyRune with ch='\' or '|' (0x1c + 0x60 = 0x7c = '|') and ModCtrl.
+func isCtrlBackslash(event *tcell.EventKey) bool {
+	if event.Key() == tcell.KeyCtrlBackslash || event.Key() == tcell.Key(28) {
+		return true
+	}
+	if event.Modifiers()&tcell.ModCtrl != 0 {
+		r := event.Rune()
+		if r == '\\' || r == '|' || r == 0x1c || r == 28 {
+			return true
+		}
+	}
+	return false
+}
+
 // handleGlobalKeys intercepts keys at the app level. Input capture runs BEFORE
 // the focused widget sees the event, so this handler decides what the app owns
 // vs. what gets forwarded to the embedded terminal.
 //
-//   - Terminal pane focused (session running): Ctrl+B opens the scope
-//     switcher (global); Ctrl+\ moves focus to the host list (the session
-//     keeps running). Ctrl+C copies an active selection, otherwise it is
-//     cloned so tview's built-in "Ctrl+C stops the app" (application.go) does
-//     not fire and the remote shell receives SIGINT. Every other key —
-//     including 'q', ESC, and letter keys — is forwarded to the terminal, so
-//     apps like vim/less receive their keys (ESC exits insert mode instead of
-//     stealing focus).
+//   - Terminal pane focused (session running): Ctrl+\ / Ctrl+B release focus back
+//     to the host sidebar (the session keeps running). Ctrl+S opens the scope
+//     switcher. Ctrl+C copies an active selection, otherwise it is cloned so
+//     tview's built-in "Ctrl+C stops the app" (application.go) does not fire
+//     and the remote shell receives SIGINT. Ctrl+D offers to disconnect the
+//     session. Every other key is forwarded to the terminal.
 //   - Host list focused: Escape (with empty filter) / 'q' / Ctrl+C / Ctrl+Q
 //     open the quit confirmation modal (Q31/C). Escape with a non-empty filter
-//     clears the filter instead. Tab / Ctrl+B move focus to the terminal when a
-//     session is running; Ctrl+B opens the scope switcher; '/' focuses the
-//     filter; '?' opens help; Ctrl+D disconnects a live selected host.
+//     clears the filter instead. Tab / Ctrl+B / Ctrl+\ move focus to the terminal
+//     when a session is running; Ctrl+S (and Ctrl+B when idle) opens the scope
+//     switcher; '/' focuses the filter; '?' opens help; Ctrl+D disconnects a
+//     live selected host.
 //   - Setup / quit / disconnect / create / edit / delete / scope modal: passed
 //     through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
@@ -1450,13 +1466,15 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 
 	// Terminal pane focused.
 	if a.termFocused && a.termPane.IsRunning() {
-		switch event.Key() {
-		case tcell.KeyCtrlB:
-			a.showScopeModal()
-			return nil
-		case tcell.KeyCtrlBackslash:
+		if isCtrlBackslash(event) || event.Key() == tcell.KeyCtrlB {
 			a.FocusHostList()
 			return nil
+		}
+		if event.Key() == tcell.KeyCtrlS {
+			a.showScopeModal()
+			return nil
+		}
+		switch event.Key() {
 		case tcell.KeyCtrlC:
 			// Ctrl+C with an active selection copies it (like a terminal
 			// emulator). Otherwise clone so tview's built-in Ctrl+C quit is
@@ -1502,6 +1520,14 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		a.RequestQuit()
 		return nil
 	}
+
+	if isCtrlBackslash(event) {
+		if a.termPane.IsRunning() {
+			a.FocusTerminal()
+		}
+		return nil
+	}
+
 	switch event.Key() {
 	case tcell.KeyTab:
 		// Focus the terminal when a session is running (revamp keymap).
@@ -1510,6 +1536,16 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		}
 		return nil
 	case tcell.KeyCtrlB:
+		// With a running session, Ctrl+B toggles to the terminal; when idle,
+		// opens the scope switcher.
+		if a.termPane.IsRunning() {
+			a.FocusTerminal()
+		} else {
+			a.showScopeModal()
+		}
+		return nil
+	case tcell.KeyCtrlS:
+		// Ctrl+S ALWAYS opens the scope switcher modal.
 		a.showScopeModal()
 		return nil
 	case tcell.KeyCtrlD:

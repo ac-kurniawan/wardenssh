@@ -15,8 +15,8 @@ func TestFooterHostModeHints(t *testing.T) {
 			t.Errorf("host footer %q missing %q", text, want)
 		}
 	}
-	if !strings.Contains(text, "Ctrl+B") {
-		t.Errorf("host footer must advertise Ctrl+B Scopes: %q", text)
+	if !strings.Contains(text, "Ctrl+S") {
+		t.Errorf("host footer must advertise Ctrl+S Scopes: %q", text)
 	}
 }
 
@@ -31,7 +31,7 @@ func TestFooterSwitchesToTerminalMode(t *testing.T) {
 	f := tviewui.NewFooter()
 	f.SetMode("terminal")
 	text := f.Text()
-	for _, want := range []string{"Ctrl+\\", "Ctrl+D", "Copy", "Ctrl+B", "Scopes"} {
+	for _, want := range []string{"Ctrl+\\", "Ctrl+B", "Ctrl+D", "Copy", "Ctrl+S", "Scopes"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("terminal footer %q missing %q", text, want)
 		}

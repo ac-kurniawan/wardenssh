@@ -53,10 +53,10 @@ func waitForPane(t *testing.T, app *tviewui.App, want string) {
 	t.Fatalf("FocusedPane = %q, want %q (key routing failed)", app.FocusedPane(), want)
 }
 
-// TestRealKeyRoutingPaneSwitching: Tab and Ctrl+\ move focus host<->terminal
-// through the REAL tview event path (screen -> app input capture), while Ctrl+B
-// opens the scope switcher from either pane. This is the regression test for
-// "Tab doesn't work" / "Ctrl+B doesn't work, cannot move right-left".
+// TestRealKeyRoutingPaneSwitching: Tab and Ctrl+\ / Ctrl+B move focus host<->terminal
+// through the REAL tview event path (screen -> app input capture), while Ctrl+S
+// opens the scope switcher. This is the regression test for "Tab doesn't work" /
+// "Ctrl+\ doesn't work" / "Ctrl+B can't move right-left".
 func TestRealKeyRoutingPaneSwitching(t *testing.T) {
 	app, screen := startRealApp(t)
 
@@ -65,8 +65,8 @@ func TestRealKeyRoutingPaneSwitching(t *testing.T) {
 		t.Fatalf("initial FocusedPane = %q, want host", app.FocusedPane())
 	}
 
-	// Ctrl+B with no session opens the scope modal (nothing to toggle to).
-	screen.InjectKey(tcell.KeyCtrlB, 0, tcell.ModNone)
+	// Ctrl+S with no session opens the scope modal.
+	screen.InjectKey(tcell.KeyCtrlS, 0, tcell.ModNone)
 	waitForBool(t, func() bool { return app.InScopeModal() })
 	app.CancelScopeModal()
 	if app.InScopeModal() {
@@ -87,19 +87,26 @@ func TestRealKeyRoutingPaneSwitching(t *testing.T) {
 	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
 	waitForPane(t, app, "terminal")
 
+	// Ctrl+B from the terminal returns to the host list.
+	screen.InjectKey(tcell.KeyCtrlB, 0, tcell.ModNone)
+	waitForPane(t, app, "host")
+
+	// Ctrl+B from the host list returns to the terminal (session running).
+	screen.InjectKey(tcell.KeyCtrlB, 0, tcell.ModNone)
+	waitForPane(t, app, "terminal")
+
+	// Ctrl+S opens scope switcher from terminal; cancelling returns to terminal.
+	screen.InjectKey(tcell.KeyCtrlS, 0, tcell.ModNone)
+	waitForBool(t, func() bool { return app.InScopeModal() })
+	app.CancelScopeModal()
+	waitForPane(t, app, "terminal")
+
 	// Tab in the terminal is forwarded (no pane change).
 	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
 	time.Sleep(100 * time.Millisecond)
 	if app.FocusedPane() != "terminal" {
 		t.Errorf("Tab in terminal must be forwarded, FocusedPane = %q", app.FocusedPane())
 	}
-
-	// Ctrl+B opens the scope switcher from the terminal; cancelling returns to
-	// the terminal (the pane that was active before).
-	screen.InjectKey(tcell.KeyCtrlB, 0, tcell.ModNone)
-	waitForBool(t, func() bool { return app.InScopeModal() })
-	app.CancelScopeModal()
-	waitForPane(t, app, "terminal")
 }
 
 // waitForBool polls a condition (shared with key routing tests).
