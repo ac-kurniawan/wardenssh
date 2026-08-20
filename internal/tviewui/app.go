@@ -47,6 +47,7 @@ type App struct {
 	createModal *CreateModal
 	editModal   *CreateModal
 	deleteModal *DeleteModal
+	scopeModal  *ScopeModal
 	footer      *Footer
 
 	root    *tview.Flex
@@ -61,6 +62,7 @@ type App struct {
 	inCreate      bool
 	inEdit        bool
 	inDelete      bool
+	inScope       bool
 	sshConfigPath string
 	termFocused   bool // focus is on the terminal pane (vs. the host list)
 	pasteEnabled  bool // bracketed paste is enabled on the tview app
@@ -449,6 +451,56 @@ func (a *App) CloseEditModal() {
 		a.overlay.RemovePage("edit")
 		a.hostPane.Refresh()
 		a.app.SetFocus(a.hostPane.Primitive())
+	}
+}
+
+// InScopeModal reports whether the scope switcher overlay is open.
+func (a *App) InScopeModal() bool { return a.inScope }
+
+// showScopeModal opens the scope switcher (Ctrl+B). Selecting a scope applies
+// it to the host list and dismisses the modal.
+func (a *App) showScopeModal() {
+	if a.inScope {
+		return
+	}
+	counts := make(map[string]int)
+	for _, s := range a.hostList.Scopes() {
+		counts[s] = a.hostList.CountInScope(s)
+	}
+	a.inScope = true
+	a.scopeModal = NewScopeModal(a.hostList.Scopes(), counts, a.hostList.Scope())
+	a.scopeModal.SetOnSelect(func(s string) {
+		a.hostList.SetScope(s)
+		a.inScope = false
+		a.overlay.RemovePage("scope")
+		a.hostPane.Refresh()
+		a.app.SetFocus(a.hostPane.Primitive())
+	})
+	a.scopeModal.SetOnCancel(a.CancelScopeModal)
+	a.overlay.AddPage("scope", a.scopeModal.Primitive(), true, true)
+	a.app.SetFocus(a.scopeModal.Primitive())
+}
+
+// CancelScopeModal dismisses the scope switcher without changing the scope.
+func (a *App) CancelScopeModal() {
+	if !a.inScope {
+		return
+	}
+	a.inScope = false
+	a.overlay.RemovePage("scope")
+	a.app.SetFocus(a.hostPane.Primitive())
+}
+
+// ShowScopeModalForTest opens the scope switcher (tests only; mirrors Ctrl+B).
+func (a *App) ShowScopeModalForTest() { a.showScopeModal() }
+
+// ScopeModal returns the active scope modal instance (tests only).
+func (a *App) ScopeModal() *ScopeModal { return a.scopeModal }
+
+// ConfirmScopeModalSelect selects the highlighted scope (tests only).
+func (a *App) ConfirmScopeModalSelect() {
+	if a.scopeModal != nil {
+		a.scopeModal.TriggerSelect()
 	}
 }
 

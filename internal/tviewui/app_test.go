@@ -1150,6 +1150,40 @@ func TestApp_UpdateConnection_VaultTarget(t *testing.T) {
 	}
 }
 
+func TestAppScopeModalLifecycle(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	if app.InScopeModal() {
+		t.Fatal("precondition: not in scope modal")
+	}
+	app.ShowScopeModalForTest()
+	if !app.InScopeModal() {
+		t.Fatal("expected scope modal open after ShowScopeModalForTest")
+	}
+	app.CancelScopeModal()
+	if app.InScopeModal() {
+		t.Fatal("expected scope modal dismissed after cancel")
+	}
+}
+
+func TestAppScopeModalSelectChangesScope(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	before := app.HostPane().CurrentScope()
+	app.ShowScopeModalForTest()
+	// Move down so the selection is NOT the current (first) scope.
+	app.ScopeModal().TriggerKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	app.ConfirmScopeModalSelect()
+	if app.InScopeModal() {
+		t.Fatal("expected scope modal closed after select")
+	}
+	if app.HostPane().CurrentScope() == before {
+		t.Errorf("scope did not change: %q", before)
+	}
+}
+
+var _ = tcell.KeyCtrlB
+
 func TestApp_UpdateConnection_Refusals(t *testing.T) {
 	hl := hosts.NewList([]hosts.Entry{
 		{Alias: "live-server", HostName: "1.1.1.1", Source: "file", Live: true},
