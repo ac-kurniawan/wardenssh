@@ -53,3 +53,46 @@ func TestGlyphConstants(t *testing.T) {
 		t.Errorf("glyphs wrong: %q %q %q", tviewui.GlyphConnected, tviewui.GlyphIdle, tviewui.GlyphPointer)
 	}
 }
+
+func TestHostListPaneFocusBorder(t *testing.T) {
+	pane := tviewui.NewHostListPane(sampleHostList())
+	pane.Refresh()
+	pane.SetFocused(true)
+	if got := pane.BorderColor(); got != tviewui.AccentColor {
+		t.Errorf("focused border = %v, want accent", got)
+	}
+	pane.SetFocused(false)
+	if got := pane.BorderColor(); got != tviewui.InactiveBorder {
+		t.Errorf("unfocused border = %v, want inactive", got)
+	}
+}
+
+func TestTerminalPaneFocusBorder(t *testing.T) {
+	pane := tviewui.NewTerminalPane(nil)
+	pane.SetFocused(true)
+	if got := pane.BorderColor(); got != tviewui.AccentColor {
+		t.Errorf("focused terminal border = %v, want accent", got)
+	}
+	pane.SetFocused(false)
+	if got := pane.BorderColor(); got != tviewui.InactiveBorder {
+		t.Errorf("unfocused terminal border = %v, want inactive", got)
+	}
+}
+
+func TestAppFocusSetsPaneBorders(t *testing.T) {
+	app := tviewui.New(sampleHostList(), tviewui.Deps{}, nil)
+	app.FocusTerminal()
+	if got := app.HostPane().BorderColor(); got != tviewui.InactiveBorder {
+		t.Errorf("host pane border while terminal focused = %v, want inactive", got)
+	}
+	if got := app.TerminalPane().BorderColor(); got != tviewui.AccentColor {
+		t.Errorf("terminal pane border while focused = %v, want accent", got)
+	}
+	app.FocusHostList()
+	if got := app.HostPane().BorderColor(); got != tviewui.AccentColor {
+		t.Errorf("host pane border while focused = %v, want accent", got)
+	}
+	if got := app.TerminalPane().BorderColor(); got != tviewui.InactiveBorder {
+		t.Errorf("terminal pane border while host focused = %v, want inactive", got)
+	}
+}

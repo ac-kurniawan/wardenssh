@@ -25,6 +25,8 @@ type HostListPane struct {
 	onEdit    func(hosts.Entry)
 	onDelete  func(hosts.Entry)
 	syncStatus string
+	focused    bool
+	rowWidth   int
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
 }
 
@@ -34,6 +36,7 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		hostList: hl,
 		filter:   tview.NewInputField(),
 		list:     tview.NewList(),
+		rowWidth: 44,
 	}
 	p.filter.SetLabel("Filter: ").
 		SetFieldBackgroundColor(tcell.Color236).
@@ -50,9 +53,11 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		SetBorder(true).
 		SetTitle(" Hosts ").
 		SetTitleAlign(tview.AlignLeft)
-	p.list.SetSelectedBackgroundColor(tcell.Color24).
-		SetSelectedTextColor(tcell.Color255).
-		SetHighlightFullLine(true)
+	p.list.SetSelectedStyle(tcell.StyleDefault.
+		Background(SelectionBG).
+		Foreground(SelectionFG).
+		Bold(true))
+	p.list.SetHighlightFullLine(true)
 
 	p.list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
@@ -159,6 +164,22 @@ func (p *HostListPane) SetOnScopeChange(fn func()) { p.onScope = fn }
 func (p *HostListPane) SetSyncStatus(status string) {
 	p.syncStatus = status
 }
+
+// SetFocused updates the pane's border color to reflect keyboard focus:
+// accent when focused, inactive otherwise (focus is color-coded, never
+// line-weight — see ApplyRoundedBorders).
+func (p *HostListPane) SetFocused(focused bool) {
+	p.focused = focused
+	style := tcell.StyleDefault.Foreground(InactiveBorder)
+	if focused {
+		style = tcell.StyleDefault.Foreground(AccentColor)
+	}
+	p.list.SetBorderStyle(style)
+	p.refreshTitle()
+}
+
+// BorderColor returns the current list border color (used in tests).
+func (p *HostListPane) BorderColor() tcell.Color { return p.list.GetBorderColor() }
 
 // SetOnRefresh sets the callback for manual refresh (Ctrl+R / r key).
 func (p *HostListPane) SetOnRefresh(fn func()) {
@@ -277,21 +298,28 @@ func (p *HostListPane) SelectedRenderText() string {
 func (p *HostListPane) Refresh() {
 	p.entries = p.hostList.Visible()
 	p.list.Clear()
+	p.refreshTitle()
 
+	selected := p.list.GetCurrentItem()
+	for _, e := range p.entries {
+		p.list.AddItem(formatHostLine(e), "", 0, nil)
+	}
+	if len(p.entries) > 0 {
+		if selected < 0 || selected >= len(p.entries) {
+			selected = 0
+		}
+		p.list.SetCurrentItem(selected)
+	}
+}
+
+// refreshTitle rebuilds the list title from the current scope and sync status.
+func (p *HostListPane) refreshTitle() {
 	label := scopeLabel(p.hostList.Scope())
 	title := fmt.Sprintf(" Hosts (scope: %s) ", label)
 	if p.syncStatus != "" {
 		title = fmt.Sprintf(" Hosts (scope: %s) • %s ", label, p.syncStatus)
 	}
 	p.list.SetTitle(title)
-
-	for _, e := range p.entries {
-		p.list.AddItem(formatHostLine(e), "", 0, nil)
-	}
-
-	if len(p.entries) > 0 {
-		p.list.SetCurrentItem(0)
-	}
 }
 
 // scopeLabel maps a raw source label to a human-friendly display name:

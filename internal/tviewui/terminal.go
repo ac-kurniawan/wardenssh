@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/blacknon/tvxterm"
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
@@ -65,6 +66,46 @@ func NewTerminalPane(app *tview.Application) *TerminalPane {
 
 // Primitive returns the tview primitive for layout embedding.
 func (p *TerminalPane) Primitive() tview.Primitive { return p.flex }
+
+// SetFocused updates the border color of the currently displayed surface (the
+// active session view, or the status page when idle) to reflect keyboard
+// focus: accent when focused, inactive otherwise.
+func (p *TerminalPane) SetFocused(focused bool) {
+	style := tcell.StyleDefault.Foreground(InactiveBorder)
+	if focused {
+		style = tcell.StyleDefault.Foreground(AccentColor)
+	}
+	p.mu.Lock()
+	var view tview.Primitive
+	if s, ok := p.sessions[p.active]; ok && s != nil && s.view != nil {
+		view = s.view
+	}
+	p.mu.Unlock()
+	if view != nil {
+		if b, ok := view.(*terminalView); ok {
+			b.SetBorderStyle(style)
+		}
+		return
+	}
+	p.status.SetBorderStyle(style)
+}
+
+// BorderColor returns the border color of the currently displayed surface
+// (used in tests).
+func (p *TerminalPane) BorderColor() tcell.Color {
+	p.mu.Lock()
+	var view tview.Primitive
+	if s, ok := p.sessions[p.active]; ok && s != nil && s.view != nil {
+		view = s.view
+	}
+	p.mu.Unlock()
+	if view != nil {
+		if b, ok := view.(*terminalView); ok {
+			return b.GetBorderColor()
+		}
+	}
+	return p.status.GetBorderColor()
+}
 
 // IsRunning reports whether any terminal session is running.
 func (p *TerminalPane) IsRunning() bool {

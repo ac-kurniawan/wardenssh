@@ -71,6 +71,7 @@ type App struct {
 
 // New creates the TUI app. If vaults is non-empty, it starts in setup mode.
 func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
+	ApplyRoundedBorders()
 	SetBlockCursor()
 
 	a := &App{
@@ -182,6 +183,8 @@ func (a *App) FooterText() string {
 func (a *App) FocusTerminal() {
 	a.termFocused = true
 	a.footer.SetMode("terminal")
+	a.hostPane.SetFocused(false)
+	a.termPane.SetFocused(true)
 	a.app.SetFocus(a.termPane.Primitive())
 }
 
@@ -191,6 +194,8 @@ func (a *App) FocusTerminal() {
 func (a *App) FocusHostList() {
 	a.termFocused = false
 	a.footer.SetMode("host")
+	a.hostPane.SetFocused(true)
+	a.termPane.SetFocused(false)
 	a.app.SetFocus(a.hostPane.Primitive())
 }
 
