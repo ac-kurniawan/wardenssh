@@ -37,7 +37,7 @@ func (f *Footer) SetMode(mode string) {
 	global := keyTag("[Ctrl+S]") + " Scopes  " + keyTag("[?]") + " Help  " + keyTag("[/]") + " Filter  " + keyTag("[Ctrl+R]") + " Sync  " + keyTag("[Ctrl+Q]") + " Quit"
 	if mode == "terminal" {
 		f.view.SetText(
-			keyTag("[Ctrl+\\]") + "/" + keyTag("[Ctrl+B]") + " Sidebar  " + keyTag("[Ctrl+Shift+C]") + " Copy  " + keyTag("[Ctrl+D]") + " Disconnect\n" + global)
+			keyTag("[Ctrl+\\]") + "/" + keyTag("[Ctrl+B]") + " Sidebar  " + keyTag("[Ctrl+Shift+C]") + " Copy  " + keyTag("[Ctrl+D]") + " Disconnect  " + keyTag("[Ctrl+Shift+Q]") + " Force Kill\n" + global)
 		return
 	}
 	f.view.SetText(

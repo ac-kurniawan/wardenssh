@@ -1184,6 +1184,35 @@ func TestAppScopeModalSelectChangesScope(t *testing.T) {
 
 var _ = tcell.KeyCtrlB
 
+// TestAppCtrlShiftQHardClosesActiveSession: Ctrl+Shift+Q immediately terminates
+// a hung or idle active session without waiting for confirmation or remote shell.
+func TestAppCtrlShiftQHardClosesActiveSession(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	key := tviewui.SessionKey("prod-db-01", "file")
+	app.TerminalPane().SetSessionForTest(key, "prod-db-01", "file")
+	hl.MarkLive("prod-db-01", "file")
+	app.ShowTerminalPaneForTest()
+
+	if !app.TerminalPane().IsRunning() {
+		t.Fatal("precondition: session must be running")
+	}
+
+	// Press Ctrl+Shift+Q
+	ev := tcell.NewEventKey(tcell.KeyCtrlQ, 'Q', tcell.ModCtrl|tcell.ModShift)
+	app.HandleGlobalKey(ev)
+
+	if app.TerminalPane().IsRunning() {
+		t.Error("expected session terminated after Ctrl+Shift+Q")
+	}
+	if isLive(hl, "prod-db-01", "file") {
+		t.Error("expected host marked dead after hard close")
+	}
+	if app.FocusedPane() != "host" {
+		t.Errorf("FocusedPane = %q, want host", app.FocusedPane())
+	}
+}
+
 // TestAppCtrlQQuits: Ctrl+Q is a global safe-exit shortcut (revamp keymap).
 func TestAppCtrlQQuits(t *testing.T) {
 	hl := sampleHostList()

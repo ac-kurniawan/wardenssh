@@ -55,6 +55,7 @@ func helpText(mode string) string {
 		key("[Ctrl+Shift+C]") + " Copy selection\n" +
 		key("[Ctrl+C]") + "    Copy / SIGINT\n" +
 		key("[Ctrl+D]") + "    Disconnect session\n" +
+		key("[Ctrl+Shift+Q]") + " Force kill session (hung PTY)\n" +
 		key("[?]") + "          This help\n" +
 		key("[Ctrl+Q]") + "    Quit WardenSSH"
 	if mode == "terminal" {

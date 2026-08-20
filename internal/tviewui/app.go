@@ -1441,10 +1441,54 @@ func isCtrlBackslash(event *tcell.EventKey) bool {
 	return false
 }
 
+// isCtrlShiftQ checks whether a key event represents Ctrl+Shift+Q across platforms.
+// Used for immediate force-kill of hung/frozen terminal sessions.
+func isCtrlShiftQ(event *tcell.EventKey) bool {
+	if event.Key() == tcell.KeyCtrlQ && (event.Modifiers()&tcell.ModShift != 0 || event.Rune() == 'Q') {
+		return true
+	}
+	if event.Modifiers()&tcell.ModCtrl != 0 && event.Modifiers()&tcell.ModShift != 0 {
+		r := event.Rune()
+		if r == 'Q' || r == 'q' || r == 17 || r == 0x11 {
+			return true
+		}
+	}
+	return false
+}
+
+// HardCloseActiveSession immediately kills the active session (closing its PTY
+// backend, releasing agent credentials, unmarking the host live, and switching
+// focus back to the host list or remaining session) without requiring confirmation
+// or remote shell responsiveness. Designed for hung/frozen sessions.
+func (a *App) HardCloseActiveSession() {
+	alias, source, ok := a.termPane.ActiveEntry()
+	if !ok {
+		return
+	}
+	key := SessionKey(alias, source)
+	a.termPane.CloseSession(key)
+	if source != "file" && a.deps.Agent != nil {
+		_ = a.deps.Agent.ReleaseSession(key)
+	}
+	a.hostList.MarkDead(alias, source)
+	a.hostPane.Refresh()
+	if a.inDisconnect {
+		a.inDisconnect = false
+		a.overlay.RemovePage("disconnect")
+	}
+	if a.termPane.SessionCount() == 0 {
+		a.showHostListPane()
+		return
+	}
+	a.termPane.SyncToMostRecent()
+	a.showTerminalPane()
+}
+
 // handleGlobalKeys intercepts keys at the app level. Input capture runs BEFORE
 // the focused widget sees the event, so this handler decides what the app owns
 // vs. what gets forwarded to the embedded terminal.
 //
+//   - Ctrl+Shift+Q: immediately force-kills the active session (works even if hung).
 //   - Terminal pane focused (session running): Ctrl+\ / Ctrl+B release focus back
 //     to the host sidebar (the session keeps running). Ctrl+S opens the scope
 //     switcher. Ctrl+C copies an active selection, otherwise it is cloned so
@@ -1462,6 +1506,12 @@ func isCtrlBackslash(event *tcell.EventKey) bool {
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inScope || a.inHelp {
 		return event
+	}
+
+	// Hard-kill hung session on Ctrl+Shift+Q regardless of pane focus.
+	if isCtrlShiftQ(event) && a.termPane.IsRunning() {
+		a.HardCloseActiveSession()
+		return nil
 	}
 
 	// Terminal pane focused.

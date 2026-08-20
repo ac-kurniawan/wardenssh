@@ -20,7 +20,7 @@ func TestHelpModalHostContent(t *testing.T) {
 func TestHelpModalTerminalContent(t *testing.T) {
 	m := tviewui.NewHelpModal("terminal")
 	text := m.Text()
-	for _, want := range []string{"Ctrl+\\", "Ctrl+D", "Copy"} {
+	for _, want := range []string{"Ctrl+\\", "Ctrl+D", "Copy", "Ctrl+Shift+Q"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("terminal help missing %q:\n%s", want, text)
 		}

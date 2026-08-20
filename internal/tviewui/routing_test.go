@@ -107,6 +107,13 @@ func TestRealKeyRoutingPaneSwitching(t *testing.T) {
 	if app.FocusedPane() != "terminal" {
 		t.Errorf("Tab in terminal must be forwarded, FocusedPane = %q", app.FocusedPane())
 	}
+
+	// Ctrl+Shift+Q immediately hard-closes the active session and returns to host list.
+	screen.InjectKey(tcell.KeyCtrlQ, 'Q', tcell.ModCtrl|tcell.ModShift)
+	waitForPane(t, app, "host")
+	if app.TerminalPane().IsRunning() {
+		t.Error("expected session terminated after Ctrl+Shift+Q")
+	}
 }
 
 // waitForBool polls a condition (shared with key routing tests).
