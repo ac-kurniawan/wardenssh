@@ -173,9 +173,18 @@ To have an SSH Key item from Bitwarden/Vaultwarden appear in your WardenSSH host
 
 | Key / Shortcut | Action |
 | :--- | :--- |
+| Mouse click-drag | Select terminal text; copied to the OS clipboard on release |
+| `Ctrl+C` (with a selection) | Copy the selection to the OS clipboard |
+| `Ctrl+C` (no selection) | Forwarded to the remote shell as SIGINT |
 | `Ctrl+B` | Return focus to the host list (session keeps running) |
 | `Esc` | Forwarded to the remote shell (e.g. exits insert mode in vim) |
-| All other keys | Forwarded to the remote shell (including `Ctrl+C` = SIGINT) |
+| All other keys | Forwarded to the remote shell |
+
+Copy reaches the OS clipboard via the native Wayland/X11 tool
+(`wl-copy`/`xclip`/`xsel`) when available, falling back to the OSC 52 escape
+sequence. On Windows the Win32 clipboard API is used. Terminals built on VTE
+(e.g. GNOME Terminal) do not support OSC 52, so copy there requires
+`wl-clipboard`/`xclip` to be installed.
 
 ### Sessions
 
