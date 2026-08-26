@@ -27,7 +27,7 @@ func TestSSHArgv(t *testing.T) {
 				HostName: "1.2.3.4",
 				Source:   "file",
 			},
-			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "root@1.2.3.4"},
+			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "root@1.2.3.4"},
 		},
 		{
 			name: "Host with user and port",
@@ -38,7 +38,7 @@ func TestSSHArgv(t *testing.T) {
 				Port:     "2222",
 				Source:   "vw:personal",
 			},
-			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-p", "2222", "ubuntu@1.2.3.4"},
+			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-p", "2222", "ubuntu@1.2.3.4"},
 		},
 		{
 			name: "Host with proxyjump — defaults to root",
@@ -48,7 +48,7 @@ func TestSSHArgv(t *testing.T) {
 				ProxyJump: "jumpbox",
 				Source:    "vw:personal",
 			},
-			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-J", "jumpbox", "root@1.2.3.4"},
+			expected: []string{"ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-J", "jumpbox", "root@1.2.3.4"},
 		},
 	}
 
@@ -62,6 +62,41 @@ func TestSSHArgv(t *testing.T) {
 				if got[i] != tc.expected[i] {
 					t.Errorf("argv mismatch at index %d: expected %q, got %q", i, tc.expected[i], got[i])
 				}
+			}
+		})
+	}
+}
+
+func TestSSHArgvKeepaliveOptions(t *testing.T) {
+	origSSHBin := SSHBin
+	defer func() { SSHBin = origSSHBin }()
+	SSHBin = "ssh"
+
+	tests := []struct {
+		name string
+		got  []string
+	}{
+		{"key-auth", SSHArgv(hosts.Entry{Alias: "h", HostName: "h.internal", Source: "file"}, "/tmp/agent.sock")},
+		{"password-auth", SSHArgvPassword(hosts.Entry{Alias: "h", HostName: "h.internal", Source: "vw:personal", AuthKind: "password"})},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			foundInterval := false
+			foundCount := false
+			for i, arg := range tc.got {
+				if arg == "-o" && i+1 < len(tc.got) && tc.got[i+1] == "ServerAliveInterval=15" {
+					foundInterval = true
+				}
+				if arg == "-o" && i+1 < len(tc.got) && tc.got[i+1] == "ServerAliveCountMax=3" {
+					foundCount = true
+				}
+			}
+			if !foundInterval {
+				t.Errorf("missing ServerAliveInterval=15: %v", tc.got)
+			}
+			if !foundCount {
+				t.Errorf("missing ServerAliveCountMax=3: %v", tc.got)
 			}
 		})
 	}
@@ -181,12 +216,12 @@ func TestSSHArgvPassword(t *testing.T) {
 		{
 			name:     "password host defaults to root",
 			entry:    hosts.Entry{Alias: "prod-db", HostName: "10.0.0.9", Source: "vw:personal", AuthKind: "password"},
-			expected: []string{"ssh", "-o", "StrictHostKeyChecking=accept-new", "root@10.0.0.9"},
+			expected: []string{"ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "root@10.0.0.9"},
 		},
 		{
 			name:     "password host with user and port",
 			entry:    hosts.Entry{Alias: "prod-db", HostName: "10.0.0.9", User: "admin", Port: "2222", Source: "vw:personal", AuthKind: "password"},
-			expected: []string{"ssh", "-o", "StrictHostKeyChecking=accept-new", "-p", "2222", "admin@10.0.0.9"},
+			expected: []string{"ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-p", "2222", "admin@10.0.0.9"},
 		},
 	}
 	for _, tc := range tests {

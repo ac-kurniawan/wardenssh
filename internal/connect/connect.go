@@ -21,6 +21,21 @@ import (
 // SSHBin is the ssh executable name (overridable for tests).
 var SSHBin = "ssh"
 
+// Keepalive options sent through the SSH channel while the session is idle.
+// ServerAliveInterval sends an encrypted keepalive every 15s of inactivity,
+// keeping NAT/firewall mappings alive (they drop idle TCP at 2-5 min) and
+// ServerAliveCountMax makes ssh exit after 3 unanswered keepalives (45s)
+// instead of leaving the pane frozen on a dead connection.
+const (
+	keepAliveInterval = 15
+	keepAliveCountMax = 3
+)
+
+// keepAliveOpts returns the two ssh -o keepalive options in argv order.
+func keepAliveOpts() []string {
+	return []string{"-o", fmt.Sprintf("ServerAliveInterval=%d", keepAliveInterval), "-o", fmt.Sprintf("ServerAliveCountMax=%d", keepAliveCountMax)}
+}
+
 // AgentPipePath returns the named pipe / unix socket path for the agent.
 // Overridable for tests.
 var AgentPipePath = defaultAgentPipe
@@ -148,6 +163,8 @@ func SSHArgv(entry hosts.Entry, agentPipe string) []string {
 	args = append(args, "-o", "BatchMode=yes")
 	// Accept new host keys (per Q9/A vertical-slice pattern).
 	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	// Keep the idle connection alive; detect dead connections promptly.
+	args = append(args, keepAliveOpts()...)
 
 	// For file-sourced entries, pass the IdentityFile directly.
 	// Vault-sourced entries use the in-process agent (no -i needed).
@@ -189,6 +206,8 @@ func SSHArgvPassword(entry hosts.Entry) []string {
 	var args []string
 	args = append(args, SSHBin)
 	args = append(args, "-o", "StrictHostKeyChecking=accept-new")
+	// Keep the idle connection alive; detect dead connections promptly.
+	args = append(args, keepAliveOpts()...)
 
 	if entry.Port != "" {
 		args = append(args, "-p", entry.Port)
