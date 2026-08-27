@@ -12,18 +12,28 @@ type DeleteModal struct {
 	modal    *tview.Modal
 	onDelete func()
 	onCancel func()
+	alias    string
+	source   string
 }
 
-// NewDeleteModal builds the delete-confirmation modal for a host entry.
-func NewDeleteModal(alias string, source string) *DeleteModal {
-	m := &DeleteModal{}
+// NewDeleteModal builds the delete-confirmation modal for a host entry. When
+// live is true, the confirmation text warns that the active session will also
+// be closed (a live host's PTY/agent session is torn down alongside the entry).
+func NewDeleteModal(alias string, source string, live bool) *DeleteModal {
+	m := &DeleteModal{alias: alias, source: source}
 	targetDesc := "~/.ssh/config"
 	if source != "file" && source != "~/.ssh/config" {
 		targetDesc = fmt.Sprintf("Vault (%s)", source)
 	}
 
+	body := fmt.Sprintf("Delete connection '%s' from %s?\n\nThis action cannot be undone.", alias, targetDesc)
+	if live {
+		body += "\n\nThe active session to this host will also be closed."
+	}
+	body += "\n\n[y] Delete\n[n] Cancel"
+
 	m.modal = tview.NewModal().
-		SetText(fmt.Sprintf("Delete connection '%s' from %s?\n\nThis action cannot be undone.\n\n[y] Delete\n[n] Cancel", alias, targetDesc)).
+		SetText(body).
 		AddButtons([]string{"Delete", "Cancel"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 			switch buttonIndex {
@@ -66,6 +76,14 @@ func (m *DeleteModal) TriggerDelete() { m.triggerDelete() }
 
 // TriggerCancel fires the cancel callback.
 func (m *DeleteModal) TriggerCancel() { m.triggerCancel() }
+
+// DeleteTargetAlias returns the alias of the host entry this modal was built
+// to confirm deletion of (used in tests + for session-kill pre-flight).
+func (m *DeleteModal) DeleteTargetAlias() string { return m.alias }
+
+// DeleteTargetSource returns the source of the host entry this modal was built
+// to confirm deletion of (used in tests + for session-kill pre-flight).
+func (m *DeleteModal) DeleteTargetSource() string { return m.source }
 
 func (m *DeleteModal) triggerDelete() {
 	if m.onDelete != nil {

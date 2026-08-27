@@ -107,7 +107,6 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	a.hostPane.SetOnRefresh(func() { _ = a.TriggerSync() })
 	a.hostPane.SetOnCreate(a.showCreateModal)
 	a.hostPane.SetOnEdit(a.showEditModal)
-	a.hostPane.SetOnDelete(a.showDeleteModal)
 
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -445,8 +444,19 @@ func (a *App) showDeleteModal(entry hosts.Entry) {
 		return
 	}
 	a.inDelete = true
-	a.deleteModal = NewDeleteModal(entry.Alias, entry.Source)
+	a.deleteModal = NewDeleteModal(entry.Alias, entry.Source, entry.Live)
 	a.deleteModal.SetOnDelete(func() {
+		// Deleting a live host also tears down its session (PTY + agent
+		// session), mirroring the disconnect modal's cleanup so the user is
+		// never left with an orphaned session pointing at a removed entry.
+		if entry.Live {
+			key := SessionKey(entry.Alias, entry.Source)
+			a.termPane.CloseSession(key)
+			if entry.Source != "file" && a.deps.Agent != nil {
+				_ = a.deps.Agent.ReleaseSession(key)
+			}
+			a.hostList.MarkDead(entry.Alias, entry.Source)
+		}
 		_ = a.HandleDeleteConnection(entry)
 		a.CloseDeleteModal()
 	})
@@ -1499,8 +1509,8 @@ func (a *App) HardCloseActiveSession() {
 //     open the quit confirmation modal (Q31/C). Escape with a non-empty filter
 //     clears the filter instead. Tab / Ctrl+B / Ctrl+\ move focus to the terminal
 //     when a session is running; Ctrl+S (and Ctrl+B when idle) opens the scope
-//     switcher; '/' focuses the filter; '?' opens help; Ctrl+D disconnects a
-//     live selected host.
+//     switcher; '/' focuses the filter; '?' opens help; Ctrl+D deletes the
+//     selected host (confirming also kills its live session, if any).
 //   - Setup / quit / disconnect / create / edit / delete / scope modal: passed
 //     through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
@@ -1599,11 +1609,11 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		a.showScopeModal()
 		return nil
 	case tcell.KeyCtrlD:
-		// Disconnect a live selected host (revamp keymap). Delete key handles
-		// connection removal; Ctrl+D is disconnect.
-		if e, ok := a.hostPane.SelectedEntry(); ok && e.Live {
-			a.showDisconnectModal(e)
-			return nil
+		// Delete the selected host entry (revamp keymap). Opens the
+		// confirmation modal for both live and non-live hosts; confirming a
+		// live host also kills its session (see showDeleteModal).
+		if e, ok := a.hostPane.SelectedEntry(); ok {
+			a.showDeleteModal(e)
 		}
 		return nil
 	}

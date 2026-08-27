@@ -46,7 +46,7 @@ func helpText(mode string) string {
 		key("[/]") + "       Focus filter search\n" +
 		key("[Ctrl+N]") + "     New connection\n" +
 		key("[Ctrl+E]") + "     Edit connection\n" +
-		key("[Delete]") + "    Delete connection\n" +
+		key("[Ctrl+D]") + "     Delete host\n" +
 		key("[Ctrl+R]") + "     Sync vault\n" +
 		key("[?]") + "         This help\n" +
 		key("[Ctrl+Q]") + "     Quit WardenSSH"

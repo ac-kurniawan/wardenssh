@@ -10,7 +10,7 @@ func TestDeleteModal_Confirm(t *testing.T) {
 	deleted := false
 	cancelled := false
 
-	modal := tviewui.NewDeleteModal("prod-db", "~/.ssh/config")
+	modal := tviewui.NewDeleteModal("prod-db", "~/.ssh/config", false)
 	modal.SetOnDelete(func() { deleted = true })
 	modal.SetOnCancel(func() { cancelled = true })
 
@@ -28,7 +28,7 @@ func TestDeleteModal_Cancel(t *testing.T) {
 	deleted := false
 	cancelled := false
 
-	modal := tviewui.NewDeleteModal("prod-db", "vw:personal")
+	modal := tviewui.NewDeleteModal("prod-db", "vw:personal", false)
 	modal.SetOnDelete(func() { deleted = true })
 	modal.SetOnCancel(func() { cancelled = true })
 

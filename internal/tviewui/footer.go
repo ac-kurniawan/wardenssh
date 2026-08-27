@@ -41,7 +41,7 @@ func (f *Footer) SetMode(mode string) {
 		return
 	}
 	f.view.SetText(
-		keyTag("[↑/↓]/[j]/[k]") + " Select  " + keyTag("[Enter]") + " Connect  " + keyTag("[Tab]/[Ctrl+B]") + " Terminal  " + keyTag("[Ctrl+N]") + " New  " + keyTag("[Ctrl+E]") + " Edit\n" + global)
+		keyTag("[↑/↓]/[j]/[k]") + " Select  " + keyTag("[Enter]") + " Connect  " + keyTag("[Tab]/[Ctrl+B]") + " Terminal  " + keyTag("[Ctrl+N]") + " New  " + keyTag("[Ctrl+E]") + " Edit  " + keyTag("[Ctrl+D]") + " Delete\n" + global)
 }
 
 // Text returns the rendered footer text (used in tests).

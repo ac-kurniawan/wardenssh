@@ -25,7 +25,6 @@ type HostListPane struct {
 	onRefresh func()
 	onCreate  func()
 	onEdit    func(hosts.Entry)
-	onDelete  func(hosts.Entry)
 	syncStatus string
 	focused    bool
 	filterFocused bool
@@ -99,9 +98,6 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 			return nil
 		case tcell.KeyCtrlE:
 			p.TriggerEdit()
-			return nil
-		case tcell.KeyDelete:
-			p.TriggerDelete()
 			return nil
 		case tcell.KeyEnter:
 			if p.onConnect != nil {
@@ -281,20 +277,6 @@ func (p *HostListPane) TriggerEdit() {
 	if p.onEdit != nil {
 		if e, ok := p.SelectedEntry(); ok {
 			p.onEdit(e)
-		}
-	}
-}
-
-// SetOnDelete sets the callback for deleting a connection ('d' / Delete key).
-func (p *HostListPane) SetOnDelete(fn func(hosts.Entry)) {
-	p.onDelete = fn
-}
-
-// TriggerDelete fires the delete callback for the currently selected entry.
-func (p *HostListPane) TriggerDelete() {
-	if p.onDelete != nil {
-		if e, ok := p.SelectedEntry(); ok {
-			p.onDelete(e)
 		}
 	}
 }
