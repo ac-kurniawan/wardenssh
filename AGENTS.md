@@ -82,6 +82,10 @@ reference for the gold-standard SSH-Key item check.
 
 ## Development — Workflow (ENFORCED)
 
+- **Never commit to `main`.** All changes must happen on a new branch
+  created off `main` before any edit. Committing directly to `main` is
+  prohibited. Create the branch first (`git switch -c <branch>`), make
+  changes there, and open a PR to merge back.
 - **TDD is mandatory.** Red-Green-Refactor for every change. Write a failing
   test first; write the minimum code to pass; refactor. No untested code
   ships, and no code is written before a test demands it. This includes the
