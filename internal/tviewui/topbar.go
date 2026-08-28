@@ -88,8 +88,9 @@ func (b *TopBar) refresh() {
 
 	// RAM-only badge is always visible — the security guarantee from README.
 	ramBadge := "[#0F1E14:#22C55E] RAM-only [-]"
+	versionTag := " [#64748B]v0.9.4 • Zero-Disk[-]"
 
-	text := fmt.Sprintf("[#F8FAFC]🛡 warden[-][#22C55E]ssh[-] [#64748B]│[-] %s [#64748B]│[-] %s%s%s",
-		syncText, ramBadge, sessionHint, vaultPills)
+	text := fmt.Sprintf("[#F8FAFC]🛡 warden[-][#22C55E]ssh[-]%s [#64748B]│[-] %s [#64748B]│[-] %s%s%s",
+		versionTag, syncText, ramBadge, sessionHint, vaultPills)
 	b.view.SetText(text)
 }

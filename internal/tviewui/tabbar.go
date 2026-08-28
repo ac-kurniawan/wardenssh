@@ -116,10 +116,14 @@ func formatTabLabel(alias, host string, active bool) string {
 	if runewidth.StringWidth(h) > 12 {
 		h = runewidth.Truncate(h, 11, "…")
 	}
-	if h != "" {
-		return fmt.Sprintf(" %s %s %s ", dot, tview.Escape(alias), tview.Escape(h))
+	closeHint := ""
+	if active {
+		closeHint = " [#64748B]×[-]"
 	}
-	return fmt.Sprintf(" %s %s ", dot, tview.Escape(alias))
+	if h != "" {
+		return fmt.Sprintf(" %s %s %s%s ", dot, tview.Escape(alias), tview.Escape(h), closeHint)
+	}
+	return fmt.Sprintf(" %s %s%s ", dot, tview.Escape(alias), closeHint)
 }
 
 // TabLabelsForTest returns the plain tab labels (without tags) for assertions.

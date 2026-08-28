@@ -49,9 +49,10 @@ type App struct {
 	deleteModal *DeleteModal
 	scopeModal  *ScopeModal
 	helpModal   *HelpModal
-	footer      *Footer
-	topBar      *TopBar
-	tabBar      *SessionTabBar
+	footer        *Footer
+	topBar        *TopBar
+	tabBar        *SessionTabBar
+	sessionHeader *SessionHeader
 
 	root    *tview.Flex
 	left    *tview.Flex
@@ -144,12 +145,15 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 		a.hostPane.Refresh()
 	})
 
+	a.sessionHeader = NewSessionHeader()
+
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.hostPane.Primitive(), 0, 1, true)
 
 	a.right = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.tabBar.Primitive(), 1, 0, false).
+		AddItem(a.sessionHeader.Primitive(), 1, 0, false).
 		AddItem(a.termPane.Primitive(), 0, 1, false)
 
 	// Content: column flex. Left takes full width when no session; right
@@ -240,6 +244,7 @@ func (a *App) FocusTerminal() {
 	a.hostPane.SetFocused(false)
 	a.termPane.SetFocused(true)
 	a.termPane.SetSessionTitleState(true)
+	a.syncSessionChrome()
 	a.app.SetFocus(a.termPane.Primitive())
 }
 
@@ -252,6 +257,7 @@ func (a *App) FocusHostList() {
 	a.hostPane.SetFocused(true)
 	a.termPane.SetFocused(false)
 	a.termPane.SetSessionTitleState(false)
+	a.syncSessionChrome()
 	a.app.SetFocus(a.hostPane.Primitive())
 }
 
@@ -1500,13 +1506,16 @@ func (a *App) showHostListPane() {
 	a.FocusHostList()
 }
 
-// syncSessionChrome refreshes the top bar, tab bar, and host BG badges from the
+// syncSessionChrome refreshes the top bar, tab bar, session header, and host BG badges from the
 // current session state. Call after any session add/remove/activate.
 func (a *App) syncSessionChrome() {
 	total := a.termPane.SessionCount()
 	activeKey := ""
+	var activeAlias, activeSource string
 	if alias, source, ok := a.termPane.ActiveEntry(); ok {
 		activeKey = SessionKey(alias, source)
+		activeAlias = alias
+		activeSource = source
 	}
 	// BG badge on host list
 	a.hostPane.SetActiveKey(activeKey)
@@ -1541,6 +1550,28 @@ func (a *App) syncSessionChrome() {
 			a.tabBar.Update(keys, activeKey, aliases, hosts)
 		}
 	}
+
+	// Session header (below tab bar)
+	if a.sessionHeader != nil {
+		if total == 0 || activeAlias == "" {
+			a.sessionHeader.Clear()
+		} else {
+			var host string
+			var started time.Time
+			if e, found := a.findEntry(activeAlias, activeSource); found {
+				host = e.HostName
+			}
+			// Pull start time from termPane for uptime
+			if alias2, source2, ok := a.termPane.ActiveEntry(); ok && alias2 == activeAlias && source2 == activeSource {
+				// Use termPane's internal started via ActiveTitle? Fallback to now-0 for ticker refresh
+				_ = alias2
+			}
+			// Use zero duration for now — ticker in termPane will refresh title; header refreshes on sync only.
+			// For precise uptime, read from termPane's session (best-effort).
+			_ = started
+			a.sessionHeader.SetSession(activeAlias, host, activeSource, a.termPane.ActiveUptime(), a.termFocused)
+		}
+	}
 }
 
 // TopBar returns the header bar (tests).
@@ -1548,6 +1579,9 @@ func (a *App) TopBar() *TopBar { return a.topBar }
 
 // TabBar returns the session tab bar (tests).
 func (a *App) TabBar() *SessionTabBar { return a.tabBar }
+
+// SessionHeader returns the session header bar (tests).
+func (a *App) SessionHeader() *SessionHeader { return a.sessionHeader }
 
 // isCtrlBackslash checks whether a key event represents Ctrl+\ across platforms.
 // On Unix/VT terminals this is tcell.KeyCtrlBackslash (or Key(28)). On Windows

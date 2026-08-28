@@ -62,10 +62,11 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		return p.handleFilterKey(event)
 	})
 
-	p.list.ShowSecondaryText(false).
+	p.list.ShowSecondaryText(true).
 		SetBorder(true).
 		SetTitle(" Hosts ").
 		SetTitleAlign(tview.AlignLeft)
+	p.list.SetSecondaryTextColor(InactiveBorder)
 	p.list.SetSelectedStyle(tcell.StyleDefault.
 		Background(SelectionBG).
 		Foreground(SelectionFG).
@@ -83,11 +84,11 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		old := p.pointerIdx
 		if old >= 0 && old < len(p.entries) && old != index {
 			bg := p.isBackground(p.entries[old])
-			p.list.SetItemText(old, formatHostRowWithBG(p.entries[old], p.rowWidth, false, bg), "")
+			p.list.SetItemText(old, formatHostRowWithBG(p.entries[old], p.rowWidth, false, bg), formatHostSecondary(p.entries[old]))
 		}
 		p.pointerIdx = index
 		bg := p.isBackground(p.entries[index])
-		p.list.SetItemText(index, formatHostRowWithBG(p.entries[index], p.rowWidth, true, bg), "")
+		p.list.SetItemText(index, formatHostRowWithBG(p.entries[index], p.rowWidth, true, bg), formatHostSecondary(p.entries[index]))
 		p.updating = false
 	})
 
@@ -131,19 +132,21 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		return event
 	})
 
-	// Filter card: bordered input (title "🔍 Filter [/]") + right-aligned scope
-	// badge with the per-scope host count. The badge sits to the RIGHT of the
-	// input (FlexColumn = one item per column = horizontal arrangement), so the
-	// fixed-width badge never consumes the input's height. The badge lives
-	// outside the input's border so the input keeps its own rounded frame.
-	filterCard := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(p.filter, 0, 1, true).
-		AddItem(p.scopeText, 20, 0, false)
+	// Filter card: full-width bordered input (title "🔍 Filter [/]").
+	// Scope segmented control sits on its own row below the filter (not
+	// side-by-side) so narrow terminals (40cols) still show the filter title
+	// and the segmented bar adapts via wrapping/truncation — mirrors
+	// index.html's layout where search is row 1 and segmented tabs are row 2.
+	p.scopeText.SetTextAlign(tview.AlignLeft)
+	filterCard := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(p.filter, 3, 0, true)
+	// Scope bar is a single-line TextView below the filter.
+	p.scopeText.SetBorder(false)
 
-	// Outer flex stacks the filter card above the host list (FlexRow = one
-	// item per row = vertical arrangement).
+	// Outer flex stacks filter card + scope bar + host list (FlexRow = vertical).
 	p.flex = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(filterCard, 3, 0, true).
+		AddItem(p.scopeText, 1, 0, false).
 		AddItem(p.list, 0, 1, false)
 	return p
 }
@@ -240,6 +243,7 @@ func (p *HostListPane) SetFocused(focused bool) {
 		style = tcell.StyleDefault.Foreground(AccentColor)
 	}
 	p.list.SetBorderStyle(style)
+	p.filter.SetBorderStyle(style)
 	p.refreshTitle()
 }
 
@@ -371,6 +375,7 @@ func (p *HostListPane) isBackground(e hosts.Entry) bool {
 
 // Refresh re-reads the visible entries from the underlying hosts.List and
 // rebuilds the tview.List items. The selected row gets the pointer glyph.
+// Secondary text shows user@host • source (muted) mimicking web's second line.
 func (p *HostListPane) Refresh() {
 	p.entries = p.hostList.Visible()
 	p.matchCount = len(p.entries)
@@ -386,7 +391,9 @@ func (p *HostListPane) Refresh() {
 	p.pointerIdx = selected
 	for i, e := range p.entries {
 		bg := p.isBackground(e)
-		p.list.AddItem(formatHostRowWithBG(e, p.rowWidth, i == selected, bg), "", 0, nil)
+		main := formatHostRowWithBG(e, p.rowWidth, i == selected, bg)
+		secondary := formatHostSecondary(e)
+		p.list.AddItem(main, secondary, 0, nil)
 	}
 	if len(p.entries) > 0 {
 		if selected >= len(p.entries) {
@@ -400,14 +407,69 @@ func (p *HostListPane) Refresh() {
 	}
 }
 
-// updateScopeBadge renders the right-aligned scope badge next to the filter:
-// "Scope: <label> (<count>) · <matches> matches" with violet label and amber
-// counter, mirroring index-tui.html semantics.
+// formatHostSecondary renders the dim second line: user@host • source
+// Mirrors index.html's "root@104.250.118.240 • 12ms • personal"
+func formatHostSecondary(e hosts.Entry) string {
+	userHost := e.HostName
+	if e.User != "" {
+		userHost = e.User + "@" + e.HostName
+	}
+	// Shorten source: "vw:personal" -> "personal", "file" -> "local"
+	src := e.Source
+	if src == "file" {
+		src = "local"
+	} else {
+		src = strings.TrimPrefix(src, "vw:")
+	}
+	// Truncate userHost to keep secondary compact (max 28ch before source)
+	if runewidth.StringWidth(userHost) > 26 {
+		userHost = runewidth.Truncate(userHost, 25, "…")
+	}
+	if src != "" {
+		return fmt.Sprintf("[#64748B]%s • %s[-]", tview.Escape(userHost), tview.Escape(src))
+	}
+	return fmt.Sprintf("[#64748B]%s[-]", tview.Escape(userHost))
+}
+
+// updateScopeBadge renders the segmented scope control next to the filter,
+// mirroring index-tui.html's tab row: "All 4  personal ●  work ●  local"
+// The active scope is highlighted with SelectionBG+Accent, inactive muted.
+// Appends "· N matches" with amber counter for filter feedback.
 func (p *HostListPane) updateScopeBadge() {
-	label := p.ScopeLabel()
-	// Middle dot separator improves scanability vs double-space.
-	p.scopeText.SetText(fmt.Sprintf("[#38BDF8]Scope: %s (%d)[-] [#64748B]·[-] [#F59E0B]%d matches[-]",
-		label, p.scopeCount, p.matchCount))
+	scopes := p.hostList.Scopes()
+	if len(scopes) == 0 {
+		p.scopeText.SetText(fmt.Sprintf("[#38BDF8]Scope: %s (%d)[-] [#64748B]·[-] [#F59E0B]%d matches[-]",
+			p.ScopeLabel(), p.scopeCount, p.matchCount))
+		return
+	}
+	var parts []string
+	current := p.hostList.Scope()
+	for _, sc := range scopes {
+		label := shortScopeLabel(sc)
+		count := p.hostList.CountInScope(sc)
+		// Display label: "All" for "" else short label
+		if sc == current {
+			parts = append(parts, fmt.Sprintf("[#38BDF8:#1E293B:b] %s %d [-]", tview.Escape(label), count))
+		} else {
+			parts = append(parts, fmt.Sprintf("[#64748B] %s %d [-]", tview.Escape(label), count))
+		}
+	}
+	seg := strings.Join(parts, " ")
+	// Append matches counter if filtered or many entries
+	seg += fmt.Sprintf(" [#64748B]·[-] [#F59E0B]%d matches[-]", p.matchCount)
+	p.scopeText.SetText(seg)
+}
+
+func shortScopeLabel(scope string) string {
+	switch scope {
+	case "":
+		return "All"
+	case "file":
+		return "local"
+	default:
+		// strip vw: prefix
+		return strings.TrimPrefix(scope, "vw:")
+	}
 }
 
 // refreshTitle rebuilds the list title from the current scope and sync status.

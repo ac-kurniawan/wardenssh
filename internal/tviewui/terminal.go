@@ -278,6 +278,17 @@ func (p *TerminalPane) ActiveTitle() string {
 	return title
 }
 
+// ActiveUptime returns the elapsed time since the active session started (or 0).
+func (p *TerminalPane) ActiveUptime() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.sessions[p.active]
+	if s == nil || s.started.IsZero() {
+		return 0
+	}
+	return time.Since(s.started)
+}
+
 // SetSessionStartForTest rewinds a session's start time (tests only), so the
 // uptime telemetry can be exercised deterministically.
 func (p *TerminalPane) SetSessionStartForTest(key string, started time.Time) {
