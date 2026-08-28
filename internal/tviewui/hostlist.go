@@ -34,6 +34,7 @@ type HostListPane struct {
 	matchCount int
 	scopeCount int
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
+	activeKey string // SessionKey of the currently displayed terminal session (for BG badge)
 }
 
 // NewHostListPane builds the left pane from a hosts.List.
@@ -81,10 +82,12 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		p.updating = true
 		old := p.pointerIdx
 		if old >= 0 && old < len(p.entries) && old != index {
-			p.list.SetItemText(old, formatHostRow(p.entries[old], p.rowWidth, false), "")
+			bg := p.isBackground(p.entries[old])
+			p.list.SetItemText(old, formatHostRowWithBG(p.entries[old], p.rowWidth, false, bg), "")
 		}
 		p.pointerIdx = index
-		p.list.SetItemText(index, formatHostRow(p.entries[index], p.rowWidth, true), "")
+		bg := p.isBackground(p.entries[index])
+		p.list.SetItemText(index, formatHostRowWithBG(p.entries[index], p.rowWidth, true, bg), "")
 		p.updating = false
 	})
 
@@ -347,6 +350,25 @@ func (p *HostListPane) SetRowWidth(width int) {
 	p.rowWidth = width
 }
 
+// SetActiveKey records the currently displayed terminal session key so
+// background sessions (Live but not active) can render the amber BG chip.
+func (p *HostListPane) SetActiveKey(key string) { p.activeKey = key }
+
+// ActiveKey returns the currently recorded active session key.
+func (p *HostListPane) ActiveKey() string { return p.activeKey }
+
+// isBackground reports whether e is a background session (Live but not active).
+func (p *HostListPane) isBackground(e hosts.Entry) bool {
+	if !e.Live {
+		return false
+	}
+	if p.activeKey == "" {
+		return false
+	}
+	// SessionKey is alias\x00source; compare with the pane's active key.
+	return fmt.Sprintf("%s\x00%s", e.Alias, e.Source) != p.activeKey
+}
+
 // Refresh re-reads the visible entries from the underlying hosts.List and
 // rebuilds the tview.List items. The selected row gets the pointer glyph.
 func (p *HostListPane) Refresh() {
@@ -363,7 +385,8 @@ func (p *HostListPane) Refresh() {
 	}
 	p.pointerIdx = selected
 	for i, e := range p.entries {
-		p.list.AddItem(formatHostRow(e, p.rowWidth, i == selected), "", 0, nil)
+		bg := p.isBackground(e)
+		p.list.AddItem(formatHostRowWithBG(e, p.rowWidth, i == selected, bg), "", 0, nil)
 	}
 	if len(p.entries) > 0 {
 		if selected >= len(p.entries) {
@@ -371,14 +394,19 @@ func (p *HostListPane) Refresh() {
 			p.pointerIdx = 0
 		}
 		p.list.SetCurrentItem(selected)
+	} else if p.hostList.Scope() != "" || p.filter.GetText() != "" {
+		// Empty filtered state — keep list bordered but hint at next action.
+		p.list.SetTitle(fmt.Sprintf(" Hosts (scope: %s) — no matches • press / to filter, Ctrl+N new ", scopeLabel(p.hostList.Scope())))
 	}
 }
 
 // updateScopeBadge renders the right-aligned scope badge next to the filter:
-// "Scope: <label> (<count>)" with the match counter in amber.
+// "Scope: <label> (<count>) · <matches> matches" with violet label and amber
+// counter, mirroring index-tui.html semantics.
 func (p *HostListPane) updateScopeBadge() {
 	label := p.ScopeLabel()
-	p.scopeText.SetText(fmt.Sprintf("[#38BDF8]Scope: %s (%d)[-]  [#F59E0B]%d matches[-]",
+	// Middle dot separator improves scanability vs double-space.
+	p.scopeText.SetText(fmt.Sprintf("[#38BDF8]Scope: %s (%d)[-] [#64748B]·[-] [#F59E0B]%d matches[-]",
 		label, p.scopeCount, p.matchCount))
 }
 
@@ -388,6 +416,10 @@ func (p *HostListPane) refreshTitle() {
 	title := fmt.Sprintf(" Hosts (scope: %s) ", label)
 	if p.syncStatus != "" {
 		title = fmt.Sprintf(" Hosts (scope: %s) • %s ", label, p.syncStatus)
+	}
+	if len(p.entries) == 0 && p.filter.GetText() == "" && p.syncStatus == "" {
+		// Hint count when unfiltered but empty (e.g. fresh install, no hosts yet).
+		title = fmt.Sprintf(" Hosts (scope: %s) — 0 hosts • Ctrl+N new ", label)
 	}
 	p.list.SetTitle(title)
 }
@@ -411,6 +443,11 @@ func FormatHostRowForTest(e hosts.Entry, width int, selected bool) string {
 	return formatHostRow(e, width, selected)
 }
 
+// FormatHostRowWithBGForTest exposes the BG-aware formatter (tests only).
+func FormatHostRowWithBGForTest(e hosts.Entry, width int, selected bool, isBackground bool) string {
+	return formatHostRowWithBG(e, width, selected, isBackground)
+}
+
 // formatHostRow renders one host entry as a fixed-width, column-aligned row:
 //
 //	{pointer}{glyph} {name:truncated…} {address:right-aligned}
@@ -419,6 +456,14 @@ func FormatHostRowForTest(e hosts.Entry, width int, selected bool) string {
 // absorbs the width deficit with a tail ellipsis. Style tags are foreground-
 // only so tview's selected-row background fills the full line (defect #2).
 func formatHostRow(e hosts.Entry, width int, selected bool) string {
+	return formatHostRowWithBG(e, width, selected, false)
+}
+
+// formatHostRowWithBG is the BG-aware variant: when isBackground is true the
+// entry is live but not the currently displayed session — rendered with an
+// amber [orange]BG[-] chip so the yield-and-switch state is visible at a
+// glance (mirrors index-tui.html BG semantics).
+func formatHostRowWithBG(e hosts.Entry, width int, selected bool, isBackground bool) string {
 	pointer := "  "
 	if selected {
 		pointer = GlyphPointer + " "
@@ -432,11 +477,40 @@ func formatHostRow(e hosts.Entry, width int, selected bool) string {
 	if nameW < 4 {
 		nameW = 4
 	}
-	name := truncateEllipsis(e.Alias, nameW)
+	// Build suffix badges: pw (yellow) + BG (amber) — both foreground-only.
+	suffix := ""
 	if e.AuthKind == "password" {
-		pw := " [yellow]pw[-]"
-		name = truncateEllipsis(e.Alias + pw, nameW)
+		suffix += " [yellow]pw[-]"
 	}
+	if isBackground {
+		suffix += " [orange]BG[-]"
+	}
+	if suffix != "" {
+		name := truncateEllipsis(e.Alias+suffix, nameW)
+		// If truncation clipped the suffix, fall back to alias-only with ellipsis
+		// so the badge contract is preserved on narrow widths.
+		if !containsBadge(name, suffix) && runewidth.StringWidth(e.Alias+suffix) > nameW {
+			// Try alias truncated + strongest badge (BG takes priority for visibility)
+			if isBackground {
+				alt := truncateEllipsis(e.Alias+" [orange]BG[-]", nameW)
+				if containsBadge(alt, "BG") {
+					name = alt
+				} else {
+					name = truncateEllipsis(e.Alias, nameW)
+				}
+			} else {
+				name = truncateEllipsis(e.Alias, nameW)
+			}
+		}
+		addr := e.HostName
+		if runewidth.StringWidth(addr) > addrW {
+			addr = runewidth.Truncate(addr, addrW, "…")
+		}
+		addr = padLeft(addr, addrW)
+		line := pointer + glyph + " " + name + " " + addr
+		return padRight(line, width)
+	}
+	name := truncateEllipsis(e.Alias, nameW)
 	addr := e.HostName
 	if runewidth.StringWidth(addr) > addrW {
 		addr = runewidth.Truncate(addr, addrW, "…")
@@ -444,6 +518,10 @@ func formatHostRow(e hosts.Entry, width int, selected bool) string {
 	addr = padLeft(addr, addrW)
 	line := pointer + glyph + " " + name + " " + addr
 	return padRight(line, width)
+}
+
+func containsBadge(s, badge string) bool {
+	return strings.Contains(s, badge)
 }
 
 func truncateEllipsis(s string, maxW int) string {

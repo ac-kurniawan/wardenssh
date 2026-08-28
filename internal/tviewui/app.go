@@ -50,6 +50,8 @@ type App struct {
 	scopeModal  *ScopeModal
 	helpModal   *HelpModal
 	footer      *Footer
+	topBar      *TopBar
+	tabBar      *SessionTabBar
 
 	root    *tview.Flex
 	left    *tview.Flex
@@ -108,11 +110,46 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	a.hostPane.SetOnCreate(a.showCreateModal)
 	a.hostPane.SetOnEdit(a.showEditModal)
 
+	// Top bar: vault sync + RAM-only + session counts (mirrors index-tui.html header).
+	vaultNames := make([]string, 0, len(vaults))
+	for _, v := range vaults {
+		if v.Name != "" {
+			vaultNames = append(vaultNames, v.Name)
+		}
+	}
+	a.topBar = NewTopBar(vaultNames)
+
+	// Session tab bar above terminal (mirrors index-tui.html tab row).
+	a.tabBar = NewSessionTabBar()
+	a.tabBar.SetOnSelect(func(key string) {
+		a.termPane.Activate(key)
+		a.syncSessionChrome()
+		a.showTerminalPane()
+	})
+	a.tabBar.SetOnClose(func(key string) {
+		a.termPane.CloseSession(key)
+		for _, e := range a.hostList.All() {
+			if SessionKey(e.Alias, e.Source) == key {
+				a.hostList.MarkDead(e.Alias, e.Source)
+				break
+			}
+		}
+		a.syncSessionChrome()
+		if a.termPane.SessionCount() == 0 {
+			a.showHostListPane()
+		} else {
+			a.termPane.SyncToMostRecent()
+			a.showTerminalPane()
+		}
+		a.hostPane.Refresh()
+	})
+
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.hostPane.Primitive(), 0, 1, true)
 
 	a.right = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.tabBar.Primitive(), 1, 0, false).
 		AddItem(a.termPane.Primitive(), 0, 1, false)
 
 	// Content: column flex. Left takes full width when no session; right
@@ -121,6 +158,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 		AddItem(a.left, 0, 1, true)
 
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.topBar.Primitive(), 1, 0, false).
 		AddItem(content, 0, 1, true)
 
 	// Footer hotkey hints (two-row bar at the bottom).
@@ -297,6 +335,9 @@ func (a *App) TriggerSync() <-chan struct{} {
 		a.queueUpdateDraw(func() {
 			a.hostPane.SetSyncStatus(status)
 			a.hostPane.Refresh()
+			if a.topBar != nil {
+				a.topBar.SetSyncStatus(status)
+			}
 		})
 	}()
 	return done
@@ -1398,7 +1439,6 @@ func (a *App) handleConnect(entry hosts.Entry) {
 		// Called from the backend read-loop goroutine — marshal UI updates.
 		a.app.QueueUpdateDraw(func() {
 			a.hostList.MarkDead(entry.Alias, entry.Source)
-			a.hostPane.Refresh()
 			if a.termPane.SessionCount() == 0 {
 				a.showHostListPane()
 				return
@@ -1410,7 +1450,7 @@ func (a *App) handleConnect(entry hosts.Entry) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wardenssh: start ssh: %v\n", err)
 		a.hostList.MarkDead(entry.Alias, entry.Source)
-		a.hostPane.Refresh()
+		a.syncSessionChrome()
 		return
 	}
 
@@ -1418,21 +1458,96 @@ func (a *App) handleConnect(entry hosts.Entry) {
 	a.showTerminalPane()
 }
 
+func (a *App) contentFlex() *tview.Flex {
+	// root = [topBar, content, footer]; content is index 1
+	if a.root.GetItemCount() >= 2 {
+		if c, ok := a.root.GetItem(1).(*tview.Flex); ok {
+			return c
+		}
+	}
+	// Fallback for tests that bypass New layout (should not happen)
+	if a.root.GetItemCount() >= 1 {
+		if c, ok := a.root.GetItem(0).(*tview.Flex); ok {
+			return c
+		}
+	}
+	return nil
+}
+
 func (a *App) showTerminalPane() {
-	content := a.root.GetItem(0).(*tview.Flex)
+	content := a.contentFlex()
+	if content == nil {
+		a.FocusTerminal()
+		return
+	}
 	if content.GetItemCount() < 2 {
 		content.AddItem(a.right, 0, 2, true)
 	}
+	a.syncSessionChrome()
 	a.FocusTerminal()
 }
 
 func (a *App) showHostListPane() {
-	content := a.root.GetItem(0).(*tview.Flex)
+	content := a.contentFlex()
+	if content == nil {
+		a.FocusHostList()
+		return
+	}
 	for content.GetItemCount() > 1 {
 		content.RemoveItem(a.right)
 	}
+	a.syncSessionChrome()
 	a.FocusHostList()
 }
+
+// syncSessionChrome refreshes the top bar, tab bar, and host BG badges from the
+// current session state. Call after any session add/remove/activate.
+func (a *App) syncSessionChrome() {
+	total := a.termPane.SessionCount()
+	activeKey := ""
+	if alias, source, ok := a.termPane.ActiveEntry(); ok {
+		activeKey = SessionKey(alias, source)
+	}
+	// BG badge on host list
+	a.hostPane.SetActiveKey(activeKey)
+	a.hostPane.Refresh()
+
+	// Top bar session counters
+	activeN := 0
+	if activeKey != "" {
+		activeN = 1
+	}
+	if a.topBar != nil {
+		a.topBar.SetSessionCounts(activeN, total)
+	}
+
+	// Tab bar
+	if a.tabBar != nil {
+		if total == 0 {
+			a.tabBar.Update(nil, "", nil, nil)
+		} else {
+			keys := a.termPane.OrderedKeys()
+			aliases := map[string]string{}
+			hosts := map[string]string{}
+			for _, k := range keys {
+				if alias, source, ok := a.termPane.EntryForKey(k); ok {
+					aliases[k] = alias
+					// Hostname from hostList if available
+					if e, found := a.findEntry(alias, source); found {
+						hosts[k] = e.HostName
+					}
+				}
+			}
+			a.tabBar.Update(keys, activeKey, aliases, hosts)
+		}
+	}
+}
+
+// TopBar returns the header bar (tests).
+func (a *App) TopBar() *TopBar { return a.topBar }
+
+// TabBar returns the session tab bar (tests).
+func (a *App) TabBar() *SessionTabBar { return a.tabBar }
 
 // isCtrlBackslash checks whether a key event represents Ctrl+\ across platforms.
 // On Unix/VT terminals this is tcell.KeyCtrlBackslash (or Key(28)). On Windows
@@ -1481,7 +1596,6 @@ func (a *App) HardCloseActiveSession() {
 		_ = a.deps.Agent.ReleaseSession(key)
 	}
 	a.hostList.MarkDead(alias, source)
-	a.hostPane.Refresh()
 	if a.inDisconnect {
 		a.inDisconnect = false
 		a.overlay.RemovePage("disconnect")
