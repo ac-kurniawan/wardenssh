@@ -61,18 +61,34 @@ func NewTerminalPane(app *tview.Application) *TerminalPane {
 	p := &TerminalPane{
 		app:      app,
 		pages:    tview.NewPages(),
-		status:   tview.NewTextView(),
+		status:   tview.NewTextView().SetDynamicColors(true).SetWordWrap(true),
 		sessions: map[string]*terminalSession{},
 	}
-	p.status.SetText(" [yellow]No active session[-]").
+	p.status.SetText(emptyTerminalText()).
 		SetTextAlign(tview.AlignLeft)
-	p.status.SetBorder(true).SetTitle(" Terminal ")
+	p.status.SetBorder(true).SetTitle(" Terminal — No Session ")
 	p.pages.AddPage("status", p.status, true, false)
 
 	p.flex = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(p.pages, 0, 1, true)
 	return p
 }
+
+// emptyTerminalText is the teaching empty state shown when no session exists.
+// Mirrors index-tui.html's 3-step flow + security note.
+func emptyTerminalText() string {
+	return "\n" +
+		"  [white]No active session[-]\n\n" +
+		"  [#64748B]Select a host and press [yellow]Enter[-] to connect.[-]\n" +
+		"  [#64748B]Your keys stay in [#22C55E]RAM only[-][#64748B] — never written to disk.[-]\n\n" +
+		"  [#38BDF8]Quick start:[-]\n" +
+		"    [#A855F7]↑/↓[-] Navigate  [#A855F7]Enter[-] Connect  [#A855F7]/[-] Filter  [#A855F7]Ctrl+N[-] New\n\n" +
+		"  [#64748B]Tips: [yellow]Ctrl+B[-] moves focus between panes without closing the session.[-]\n" +
+		"  [#64748B]       Background sessions keep running — re-select the host to switch back.[-]"
+}
+
+// EmptyStatusText exposes the empty-state text for tests.
+func EmptyStatusText() string { return emptyTerminalText() }
 
 // Primitive returns the tview primitive for layout embedding.
 func (p *TerminalPane) Primitive() tview.Primitive { return p.flex }
@@ -158,6 +174,30 @@ func (p *TerminalPane) ActiveEntry() (alias, source string, ok bool) {
 	return s.alias, s.source, true
 }
 
+// OrderedKeys returns the ordered session keys that are still live (for tab bar).
+func (p *TerminalPane) OrderedKeys() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []string
+	for _, k := range p.order {
+		if _, ok := p.sessions[k]; ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// EntryForKey returns alias/source for a given session key (for tab bar labels).
+func (p *TerminalPane) EntryForKey(key string) (alias, source string, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s, ok := p.sessions[key]
+	if s == nil || !ok {
+		return "", "", false
+	}
+	return s.alias, s.source, true
+}
+
 // SetSessionForTest registers a session for the given key without a real
 // backend (tests only), making it the active session.
 func (p *TerminalPane) SetSessionForTest(key, alias, source string) {
@@ -177,16 +217,32 @@ func FormatSessionTitleForTest(alias, host, state string, up time.Duration) stri
 	return formatSessionTitle(alias, host, state, up)
 }
 
+// FormatSessionTitleWithSourceForTest exposes the source-aware formatter (tests only).
+func FormatSessionTitleWithSourceForTest(alias, host, source, state string, up time.Duration) string {
+	return formatSessionTitleWithSource(alias, host, source, state, up)
+}
+
 // formatSessionTitle composes the terminal pane title: "💻 alias (host)
 // [CONNECTED/ACTIVE SESSION] · Up: <elapsed>". The host is tail-truncated so a
 // long address never clips the state badge.
 func formatSessionTitle(alias, host, state string, up time.Duration) string {
+	return formatSessionTitleWithSource(alias, host, "file", state, up)
+}
+
+// formatSessionTitleWithSource adds a RAM-only agent hint for vault-sourced
+// sessions so the zero-disk guarantee is surfaced in the title chrome (mirrors
+// index-tui.html "Agent: ed25519 • RAM only").
+func formatSessionTitleWithSource(alias, host, source, state string, up time.Duration) string {
 	addr := host
 	if runewidth.StringWidth(addr) > 30 {
 		addr = runewidth.Truncate(addr, 30, "…")
 	}
 	upStr := formatUptime(up)
-	return fmt.Sprintf("💻 %s (%s) [%s] · Up: %s", alias, addr, state, upStr)
+	base := fmt.Sprintf("💻 %s (%s) [%s] · Up: %s", alias, addr, state, upStr)
+	if source != "file" && source != "" {
+		base += " • Agent: RAM-only"
+	}
+	return base
 }
 
 // formatUptime renders a duration compactly: "0s", "1m30s", "14d 6h".
@@ -220,6 +276,17 @@ func (p *TerminalPane) ActiveTitle() string {
 	}
 	p.mu.Unlock()
 	return title
+}
+
+// ActiveUptime returns the elapsed time since the active session started (or 0).
+func (p *TerminalPane) ActiveUptime() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.sessions[p.active]
+	if s == nil || s.started.IsZero() {
+		return 0
+	}
+	return time.Since(s.started)
 }
 
 // SetSessionStartForTest rewinds a session's start time (tests only), so the
@@ -279,7 +346,7 @@ func (p *TerminalPane) setSessionTitle(key string, focused bool) {
 	if s.started.UnixNano() != 0 {
 		up = time.Now().Sub(s.started)
 	}
-	s.viewTitle = formatSessionTitle(s.alias, s.host, state, up)
+	s.viewTitle = formatSessionTitleWithSource(s.alias, s.host, s.source, state, up)
 	title := s.viewTitle
 	view := s.view
 	p.mu.Unlock()

@@ -34,6 +34,7 @@ type HostListPane struct {
 	matchCount int
 	scopeCount int
 	entries    []hosts.Entry // cached visible entries (for SelectedEntry)
+	activeKey string // SessionKey of the currently displayed terminal session (for BG badge)
 }
 
 // NewHostListPane builds the left pane from a hosts.List.
@@ -61,10 +62,11 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		return p.handleFilterKey(event)
 	})
 
-	p.list.ShowSecondaryText(false).
+	p.list.ShowSecondaryText(true).
 		SetBorder(true).
 		SetTitle(" Hosts ").
 		SetTitleAlign(tview.AlignLeft)
+	p.list.SetSecondaryTextColor(InactiveBorder)
 	p.list.SetSelectedStyle(tcell.StyleDefault.
 		Background(SelectionBG).
 		Foreground(SelectionFG).
@@ -81,10 +83,12 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		p.updating = true
 		old := p.pointerIdx
 		if old >= 0 && old < len(p.entries) && old != index {
-			p.list.SetItemText(old, formatHostRow(p.entries[old], p.rowWidth, false), "")
+			bg := p.isBackground(p.entries[old])
+			p.list.SetItemText(old, formatHostRowWithBG(p.entries[old], p.rowWidth, false, bg), formatHostSecondary(p.entries[old]))
 		}
 		p.pointerIdx = index
-		p.list.SetItemText(index, formatHostRow(p.entries[index], p.rowWidth, true), "")
+		bg := p.isBackground(p.entries[index])
+		p.list.SetItemText(index, formatHostRowWithBG(p.entries[index], p.rowWidth, true, bg), formatHostSecondary(p.entries[index]))
 		p.updating = false
 	})
 
@@ -128,19 +132,21 @@ func NewHostListPane(hl *hosts.List) *HostListPane {
 		return event
 	})
 
-	// Filter card: bordered input (title "🔍 Filter [/]") + right-aligned scope
-	// badge with the per-scope host count. The badge sits to the RIGHT of the
-	// input (FlexColumn = one item per column = horizontal arrangement), so the
-	// fixed-width badge never consumes the input's height. The badge lives
-	// outside the input's border so the input keeps its own rounded frame.
-	filterCard := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(p.filter, 0, 1, true).
-		AddItem(p.scopeText, 20, 0, false)
+	// Filter card: full-width bordered input (title "🔍 Filter [/]").
+	// Scope segmented control sits on its own row below the filter (not
+	// side-by-side) so narrow terminals (40cols) still show the filter title
+	// and the segmented bar adapts via wrapping/truncation — mirrors
+	// index.html's layout where search is row 1 and segmented tabs are row 2.
+	p.scopeText.SetTextAlign(tview.AlignLeft)
+	filterCard := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(p.filter, 3, 0, true)
+	// Scope bar is a single-line TextView below the filter.
+	p.scopeText.SetBorder(false)
 
-	// Outer flex stacks the filter card above the host list (FlexRow = one
-	// item per row = vertical arrangement).
+	// Outer flex stacks filter card + scope bar + host list (FlexRow = vertical).
 	p.flex = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(filterCard, 3, 0, true).
+		AddItem(p.scopeText, 1, 0, false).
 		AddItem(p.list, 0, 1, false)
 	return p
 }
@@ -237,6 +243,7 @@ func (p *HostListPane) SetFocused(focused bool) {
 		style = tcell.StyleDefault.Foreground(AccentColor)
 	}
 	p.list.SetBorderStyle(style)
+	p.filter.SetBorderStyle(style)
 	p.refreshTitle()
 }
 
@@ -347,8 +354,28 @@ func (p *HostListPane) SetRowWidth(width int) {
 	p.rowWidth = width
 }
 
+// SetActiveKey records the currently displayed terminal session key so
+// background sessions (Live but not active) can render the amber BG chip.
+func (p *HostListPane) SetActiveKey(key string) { p.activeKey = key }
+
+// ActiveKey returns the currently recorded active session key.
+func (p *HostListPane) ActiveKey() string { return p.activeKey }
+
+// isBackground reports whether e is a background session (Live but not active).
+func (p *HostListPane) isBackground(e hosts.Entry) bool {
+	if !e.Live {
+		return false
+	}
+	if p.activeKey == "" {
+		return false
+	}
+	// SessionKey is alias\x00source; compare with the pane's active key.
+	return fmt.Sprintf("%s\x00%s", e.Alias, e.Source) != p.activeKey
+}
+
 // Refresh re-reads the visible entries from the underlying hosts.List and
 // rebuilds the tview.List items. The selected row gets the pointer glyph.
+// Secondary text shows user@host • source (muted) mimicking web's second line.
 func (p *HostListPane) Refresh() {
 	p.entries = p.hostList.Visible()
 	p.matchCount = len(p.entries)
@@ -363,7 +390,10 @@ func (p *HostListPane) Refresh() {
 	}
 	p.pointerIdx = selected
 	for i, e := range p.entries {
-		p.list.AddItem(formatHostRow(e, p.rowWidth, i == selected), "", 0, nil)
+		bg := p.isBackground(e)
+		main := formatHostRowWithBG(e, p.rowWidth, i == selected, bg)
+		secondary := formatHostSecondary(e)
+		p.list.AddItem(main, secondary, 0, nil)
 	}
 	if len(p.entries) > 0 {
 		if selected >= len(p.entries) {
@@ -371,15 +401,75 @@ func (p *HostListPane) Refresh() {
 			p.pointerIdx = 0
 		}
 		p.list.SetCurrentItem(selected)
+	} else if p.hostList.Scope() != "" || p.filter.GetText() != "" {
+		// Empty filtered state — keep list bordered but hint at next action.
+		p.list.SetTitle(fmt.Sprintf(" Hosts (scope: %s) — no matches • press / to filter, Ctrl+N new ", scopeLabel(p.hostList.Scope())))
 	}
 }
 
-// updateScopeBadge renders the right-aligned scope badge next to the filter:
-// "Scope: <label> (<count>)" with the match counter in amber.
+// formatHostSecondary renders the dim second line: user@host • source
+// Mirrors index.html's "root@104.250.118.240 • 12ms • personal"
+func formatHostSecondary(e hosts.Entry) string {
+	userHost := e.HostName
+	if e.User != "" {
+		userHost = e.User + "@" + e.HostName
+	}
+	// Shorten source: "vw:personal" -> "personal", "file" -> "local"
+	src := e.Source
+	if src == "file" {
+		src = "local"
+	} else {
+		src = strings.TrimPrefix(src, "vw:")
+	}
+	// Truncate userHost to keep secondary compact (max 28ch before source)
+	if runewidth.StringWidth(userHost) > 26 {
+		userHost = runewidth.Truncate(userHost, 25, "…")
+	}
+	if src != "" {
+		return fmt.Sprintf("[#64748B]%s • %s[-]", tview.Escape(userHost), tview.Escape(src))
+	}
+	return fmt.Sprintf("[#64748B]%s[-]", tview.Escape(userHost))
+}
+
+// updateScopeBadge renders the segmented scope control next to the filter,
+// mirroring index-tui.html's tab row: "All 4  personal ●  work ●  local"
+// The active scope is highlighted with SelectionBG+Accent, inactive muted.
+// Appends "· N matches" with amber counter for filter feedback.
 func (p *HostListPane) updateScopeBadge() {
-	label := p.ScopeLabel()
-	p.scopeText.SetText(fmt.Sprintf("[#38BDF8]Scope: %s (%d)[-]  [#F59E0B]%d matches[-]",
-		label, p.scopeCount, p.matchCount))
+	scopes := p.hostList.Scopes()
+	if len(scopes) == 0 {
+		p.scopeText.SetText(fmt.Sprintf("[#38BDF8]Scope: %s (%d)[-] [#64748B]·[-] [#F59E0B]%d matches[-]",
+			p.ScopeLabel(), p.scopeCount, p.matchCount))
+		return
+	}
+	var parts []string
+	current := p.hostList.Scope()
+	for _, sc := range scopes {
+		label := shortScopeLabel(sc)
+		count := p.hostList.CountInScope(sc)
+		// Display label: "All" for "" else short label
+		if sc == current {
+			parts = append(parts, fmt.Sprintf("[#38BDF8:#1E293B:b] %s %d [-]", tview.Escape(label), count))
+		} else {
+			parts = append(parts, fmt.Sprintf("[#64748B] %s %d [-]", tview.Escape(label), count))
+		}
+	}
+	seg := strings.Join(parts, " ")
+	// Append matches counter if filtered or many entries
+	seg += fmt.Sprintf(" [#64748B]·[-] [#F59E0B]%d matches[-]", p.matchCount)
+	p.scopeText.SetText(seg)
+}
+
+func shortScopeLabel(scope string) string {
+	switch scope {
+	case "":
+		return "All"
+	case "file":
+		return "local"
+	default:
+		// strip vw: prefix
+		return strings.TrimPrefix(scope, "vw:")
+	}
 }
 
 // refreshTitle rebuilds the list title from the current scope and sync status.
@@ -388,6 +478,10 @@ func (p *HostListPane) refreshTitle() {
 	title := fmt.Sprintf(" Hosts (scope: %s) ", label)
 	if p.syncStatus != "" {
 		title = fmt.Sprintf(" Hosts (scope: %s) • %s ", label, p.syncStatus)
+	}
+	if len(p.entries) == 0 && p.filter.GetText() == "" && p.syncStatus == "" {
+		// Hint count when unfiltered but empty (e.g. fresh install, no hosts yet).
+		title = fmt.Sprintf(" Hosts (scope: %s) — 0 hosts • Ctrl+N new ", label)
 	}
 	p.list.SetTitle(title)
 }
@@ -411,6 +505,11 @@ func FormatHostRowForTest(e hosts.Entry, width int, selected bool) string {
 	return formatHostRow(e, width, selected)
 }
 
+// FormatHostRowWithBGForTest exposes the BG-aware formatter (tests only).
+func FormatHostRowWithBGForTest(e hosts.Entry, width int, selected bool, isBackground bool) string {
+	return formatHostRowWithBG(e, width, selected, isBackground)
+}
+
 // formatHostRow renders one host entry as a fixed-width, column-aligned row:
 //
 //	{pointer}{glyph} {name:truncated…} {address:right-aligned}
@@ -419,6 +518,14 @@ func FormatHostRowForTest(e hosts.Entry, width int, selected bool) string {
 // absorbs the width deficit with a tail ellipsis. Style tags are foreground-
 // only so tview's selected-row background fills the full line (defect #2).
 func formatHostRow(e hosts.Entry, width int, selected bool) string {
+	return formatHostRowWithBG(e, width, selected, false)
+}
+
+// formatHostRowWithBG is the BG-aware variant: when isBackground is true the
+// entry is live but not the currently displayed session — rendered with an
+// amber [orange]BG[-] chip so the yield-and-switch state is visible at a
+// glance (mirrors index-tui.html BG semantics).
+func formatHostRowWithBG(e hosts.Entry, width int, selected bool, isBackground bool) string {
 	pointer := "  "
 	if selected {
 		pointer = GlyphPointer + " "
@@ -432,11 +539,40 @@ func formatHostRow(e hosts.Entry, width int, selected bool) string {
 	if nameW < 4 {
 		nameW = 4
 	}
-	name := truncateEllipsis(e.Alias, nameW)
+	// Build suffix badges: pw (yellow) + BG (amber) — both foreground-only.
+	suffix := ""
 	if e.AuthKind == "password" {
-		pw := " [yellow]pw[-]"
-		name = truncateEllipsis(e.Alias + pw, nameW)
+		suffix += " [yellow]pw[-]"
 	}
+	if isBackground {
+		suffix += " [orange]BG[-]"
+	}
+	if suffix != "" {
+		name := truncateEllipsis(e.Alias+suffix, nameW)
+		// If truncation clipped the suffix, fall back to alias-only with ellipsis
+		// so the badge contract is preserved on narrow widths.
+		if !containsBadge(name, suffix) && runewidth.StringWidth(e.Alias+suffix) > nameW {
+			// Try alias truncated + strongest badge (BG takes priority for visibility)
+			if isBackground {
+				alt := truncateEllipsis(e.Alias+" [orange]BG[-]", nameW)
+				if containsBadge(alt, "BG") {
+					name = alt
+				} else {
+					name = truncateEllipsis(e.Alias, nameW)
+				}
+			} else {
+				name = truncateEllipsis(e.Alias, nameW)
+			}
+		}
+		addr := e.HostName
+		if runewidth.StringWidth(addr) > addrW {
+			addr = runewidth.Truncate(addr, addrW, "…")
+		}
+		addr = padLeft(addr, addrW)
+		line := pointer + glyph + " " + name + " " + addr
+		return padRight(line, width)
+	}
+	name := truncateEllipsis(e.Alias, nameW)
 	addr := e.HostName
 	if runewidth.StringWidth(addr) > addrW {
 		addr = runewidth.Truncate(addr, addrW, "…")
@@ -444,6 +580,10 @@ func formatHostRow(e hosts.Entry, width int, selected bool) string {
 	addr = padLeft(addr, addrW)
 	line := pointer + glyph + " " + name + " " + addr
 	return padRight(line, width)
+}
+
+func containsBadge(s, badge string) bool {
+	return strings.Contains(s, badge)
 }
 
 func truncateEllipsis(s string, maxW int) string {
