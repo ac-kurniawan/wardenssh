@@ -2,6 +2,7 @@ package tviewui
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
 	"sync"
 	"time"
@@ -13,6 +14,11 @@ import (
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/session"
+)
+
+const (
+	termPingInterval    = 3 * time.Second
+	termPingDialTimeout = 1500 * time.Millisecond
 )
 
 // SessionKey uniquely identifies a host session across sources (Q11/C
@@ -27,10 +33,14 @@ type terminalSession struct {
 	alias     string
 	source    string
 	host      string
+	port      string
 	started   time.Time
 	viewTitle string
 	view      tview.Primitive
 	backend   *PtyBackend
+	pingSlot  string // "[ 42 ms]" / "[ ·· ms]" / "[--- ms]"
+	pingColor string
+	pingTarget string
 }
 
 // TerminalPane is the right pane: a tview.Pages hosting one tvxterm.View per
@@ -53,6 +63,11 @@ type TerminalPane struct {
 	titleTicker *time.Ticker
 	stopTitle   chan struct{}
 	tickerOn    bool
+
+	pingTicker *time.Ticker
+	pingStop   chan struct{}
+	pingTarget string
+	dialFn     func(host, port string) (int, bool)
 }
 
 // NewTerminalPane creates the terminal pane. The app reference is used for
@@ -204,7 +219,25 @@ func (p *TerminalPane) SetSessionForTest(key, alias, source string) {
 	p.mu.Lock()
 	p.sessions[key] = &terminalSession{
 		key: key, alias: alias, source: source,
-		host: "1.2.3.4", started: time.Now(),
+		host: "1.2.3.4", port: "22", started: time.Now(),
+		pingSlot: "[ ·· ms]", pingTarget: "1.2.3.4:22",
+	}
+	p.order = append(p.order, key)
+	p.active = key
+	p.mu.Unlock()
+	p.setSessionTitle(key, false)
+}
+
+// SetSessionWithHostForTest registers a session with explicit host/port (tests).
+func (p *TerminalPane) SetSessionWithHostForTest(key, alias, host, port, source string) {
+	if port == "" {
+		port = "22"
+	}
+	p.mu.Lock()
+	p.sessions[key] = &terminalSession{
+		key: key, alias: alias, source: source,
+		host: host, port: port, started: time.Now(),
+		pingSlot: "[ ·· ms]", pingTarget: net.JoinHostPort(host, port),
 	}
 	p.order = append(p.order, key)
 	p.active = key
@@ -346,7 +379,11 @@ func (p *TerminalPane) setSessionTitle(key string, focused bool) {
 	if s.started.UnixNano() != 0 {
 		up = time.Now().Sub(s.started)
 	}
-	s.viewTitle = formatSessionTitleWithSource(s.alias, s.host, s.source, state, up)
+	base := formatSessionTitleWithSource(s.alias, s.host, s.source, state, up)
+	if s.pingSlot != "" {
+		base += " · " + s.pingSlot
+	}
+	s.viewTitle = base
 	title := s.viewTitle
 	view := s.view
 	p.mu.Unlock()
@@ -354,6 +391,174 @@ func (p *TerminalPane) setSessionTitle(key string, focused bool) {
 	if b, ok := view.(*terminalView); ok {
 		b.SetTitle(" " + title + " ")
 	}
+}
+
+// --- Ping helpers for terminal title (mirrors sessionheader ping) ---
+
+func (p *TerminalPane) getTerminalDialFn() func(host, port string) (int, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dialFn
+}
+
+func (p *TerminalPane) terminalDial(host, port string) (int, bool) {
+	if fn := p.getTerminalDialFn(); fn != nil {
+		return fn(host, port)
+	}
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), termPingDialTimeout)
+	elapsed := int(time.Since(start).Milliseconds())
+	if err != nil {
+		return 0, false
+	}
+	_ = conn.Close()
+	if elapsed > 999 {
+		elapsed = 999
+	}
+	return elapsed, true
+}
+
+func (p *TerminalPane) startPingForActive() {
+	p.mu.Lock()
+	active := p.active
+	s := p.sessions[active]
+	if s == nil {
+		p.mu.Unlock()
+		return
+	}
+	host := s.host
+	port := s.port
+	if port == "" {
+		port = "22"
+	}
+	target := net.JoinHostPort(host, port)
+	// restart if target changed
+	if p.pingTarget == target && p.pingTicker != nil {
+		p.mu.Unlock()
+		return
+	}
+	if p.pingStop != nil {
+		close(p.pingStop)
+		p.pingStop = nil
+	}
+	if p.pingTicker != nil {
+		p.pingTicker.Stop()
+	}
+	s.pingSlot = "[ ·· ms]"
+	s.pingTarget = target
+	p.pingTarget = target
+	stopCh := make(chan struct{})
+	ticker := time.NewTicker(termPingInterval)
+	p.pingStop = stopCh
+	p.pingTicker = ticker
+	p.mu.Unlock()
+	// render probing immediately
+	p.RefreshActiveTitle()
+	go p.terminalPingLoop(host, port, stopCh, ticker)
+}
+
+func (p *TerminalPane) stopPingLoop() {
+	p.mu.Lock()
+	if p.pingStop != nil {
+		close(p.pingStop)
+		p.pingStop = nil
+	}
+	if p.pingTicker != nil {
+		p.pingTicker.Stop()
+		p.pingTicker = nil
+	}
+	p.pingTarget = ""
+	p.mu.Unlock()
+}
+
+func (p *TerminalPane) terminalPingLoop(host, port string, stopCh chan struct{}, ticker *time.Ticker) {
+	p.terminalDoProbe(host, port, stopCh)
+	for {
+		select {
+		case <-ticker.C:
+			p.terminalDoProbe(host, port, stopCh)
+		case <-stopCh:
+			return
+		}
+	}
+}
+
+func (p *TerminalPane) terminalDoProbe(host, port string, stopCh chan struct{}) {
+	ms, ok := p.terminalDial(host, port)
+	p.mu.Lock()
+	if p.pingStop != stopCh || p.pingTarget != net.JoinHostPort(host, port) {
+		p.mu.Unlock()
+		return
+	}
+	active := p.active
+	s := p.sessions[active]
+	if s == nil || s.host != host {
+		p.mu.Unlock()
+		return
+	}
+	var slot string
+	if !ok {
+		slot = "[--- ms]"
+	} else {
+		if ms < 0 {
+			ms = 0
+		}
+		if ms > 999 {
+			ms = 999
+		}
+		slot = fmt.Sprintf("[%3d ms]", ms)
+	}
+	s.pingSlot = slot
+	s.pingTarget = net.JoinHostPort(host, port)
+	p.mu.Unlock()
+	// refresh title on UI thread
+	if p.app != nil {
+		p.app.QueueUpdateDraw(func() {
+			p.RefreshActiveTitle()
+		})
+	} else {
+		p.RefreshActiveTitle()
+	}
+}
+
+// SetDialFuncForTest injects a mock dial func for terminal ping (tests).
+func (p *TerminalPane) SetDialFuncForTest(fn func(host, port string) (int, bool)) {
+	p.mu.Lock()
+	p.dialFn = fn
+	p.mu.Unlock()
+}
+
+// SetPingResultForTest injects a ping result for the active session (tests).
+func (p *TerminalPane) SetPingResultForTest(ms int, ok bool) {
+	p.mu.Lock()
+	active := p.active
+	s := p.sessions[active]
+	if s == nil {
+		p.mu.Unlock()
+		return
+	}
+	var slot string
+	if !ok {
+		slot = "[--- ms]"
+	} else {
+		if ms > 999 {
+			ms = 999
+		}
+		slot = fmt.Sprintf("[%3d ms]", ms)
+	}
+	s.pingSlot = slot
+	p.mu.Unlock()
+	p.RefreshActiveTitle()
+}
+
+// PingSlotForTest returns the active session's ping slot (tests).
+func (p *TerminalPane) PingSlotForTest() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if s := p.sessions[p.active]; s != nil {
+		return s.pingSlot
+	}
+	return ""
 }
 
 // SetSessionViewForTest attaches a terminal view to an already registered
@@ -435,11 +640,16 @@ func (p *TerminalPane) StartSSHFromCmd(entry hosts.Entry, cmd *exec.Cmd, env []s
 
 	term.Attach(backend)
 
+	port := entry.Port
+	if port == "" {
+		port = "22"
+	}
 	p.mu.Lock()
 	p.sessions[key] = &terminalSession{
 		key: key, alias: entry.Alias, source: entry.Source,
-		host: entry.HostName, started: started,
+		host: entry.HostName, port: port, started: started,
 		view: term, backend: backend,
+		pingSlot: "[ ·· ms]", pingTarget: net.JoinHostPort(entry.HostName, port),
 	}
 	p.order = append(p.order, key)
 	p.active = key
@@ -450,6 +660,7 @@ func (p *TerminalPane) StartSSHFromCmd(entry hosts.Entry, cmd *exec.Cmd, env []s
 	p.pages.AddPage(pageName(key), term, true, true)
 	p.pages.SwitchToPage(pageName(key))
 	p.startTitleTicker()
+	p.startPingForActive()
 	return nil
 }
 
@@ -515,6 +726,8 @@ func (p *TerminalPane) Activate(key string) {
 	p.active = key
 	p.mu.Unlock()
 	p.pages.SwitchToPage(pageName(key))
+	p.RefreshActiveTitle()
+	p.startPingForActive()
 }
 
 // CloseSession terminates one session and its PTY. If it was the displayed
@@ -538,6 +751,15 @@ func (p *TerminalPane) CloseSession(key string) {
 		p.pages.RemovePage(pageName(key))
 	}
 	p.syncPages()
+	// restart ping for new active or stop if none
+	p.mu.Lock()
+	hasActive := p.active != "" && p.sessions[p.active] != nil
+	p.mu.Unlock()
+	if hasActive {
+		p.startPingForActive()
+	} else {
+		p.stopPingLoop()
+	}
 }
 
 // SyncToMostRecent switches the displayed page to the most recently started
@@ -550,6 +772,11 @@ func (p *TerminalPane) SyncToMostRecent() {
 	}
 	p.mu.Unlock()
 	p.syncPages()
+	if p.active != "" {
+		p.startPingForActive()
+	} else {
+		p.stopPingLoop()
+	}
 }
 
 // syncPages shows either the active session's page or the status page.
@@ -580,6 +807,7 @@ func (p *TerminalPane) mostRecentUnlocked() string {
 // Close terminates all sessions and resets the pane to the status page.
 func (p *TerminalPane) Close() {
 	p.stopTitleTicker()
+	p.stopPingLoop()
 	p.mu.Lock()
 	var backends []*PtyBackend
 	for _, s := range p.sessions {
