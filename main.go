@@ -78,6 +78,9 @@ func parseFlags() (showVersion, noKeyring bool) {
 }
 
 func run(noKeyring bool) error {
+	// Propagate the ldflags-injected version to the TUI top bar so the
+	// header never shows a stale hardcoded tag (e.g. v0.9.4 vs actual v0.2.4).
+	tviewui.Version = version
 	cfgPath, err := config.DefaultPath()
 	if err != nil {
 		return fmt.Errorf("resolve config path: %w", err)

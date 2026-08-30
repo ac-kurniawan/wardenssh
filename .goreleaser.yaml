@@ -27,6 +27,7 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
+      - -X github.com/ac-kurniawan/wardenssh/internal/tviewui.Version={{.Version}}
 
 archives:
   - id: default
