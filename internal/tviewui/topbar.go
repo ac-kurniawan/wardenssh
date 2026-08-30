@@ -2,9 +2,15 @@ package tviewui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/rivo/tview"
 )
+
+// Version is the display version shown in the top bar (injected at build
+// time via ldflags or set from main.version at startup). Defaults to "dev"
+// for local builds; goreleaser injects the git tag (e.g. "v0.2.4").
+var Version = "dev"
 
 // TopBar is the header strip at the very top of the app — mirrors
 // index-tui.html's bar: "🛡 warden ssh  •  vault synced • RAM only  •  session count".
@@ -88,7 +94,11 @@ func (b *TopBar) refresh() {
 
 	// RAM-only badge is always visible — the security guarantee from README.
 	ramBadge := "[#0F1E14:#22C55E] RAM-only [-]"
-	versionTag := " [#64748B]v0.9.4 • Zero-Disk[-]"
+	v := Version
+	if v != "dev" && !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	versionTag := fmt.Sprintf(" [#64748B]%s • Zero-Disk[-]", tview.Escape(v))
 
 	text := fmt.Sprintf("[#F8FAFC]🛡 warden[-][#22C55E]ssh[-]%s [#64748B]│[-] %s [#64748B]│[-] %s%s%s",
 		versionTag, syncText, ramBadge, sessionHint, vaultPills)
