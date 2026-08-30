@@ -146,6 +146,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 	})
 
 	a.sessionHeader = NewSessionHeader()
+	a.sessionHeader.SetApp(a.app)
 
 	// Layout: left = host list, right = terminal (hidden initially).
 	a.left = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -1556,10 +1557,11 @@ func (a *App) syncSessionChrome() {
 		if total == 0 || activeAlias == "" {
 			a.sessionHeader.Clear()
 		} else {
-			var host string
+			var host, port string
 			var started time.Time
 			if e, found := a.findEntry(activeAlias, activeSource); found {
 				host = e.HostName
+				port = e.Port
 			}
 			// Pull start time from termPane for uptime
 			if alias2, source2, ok := a.termPane.ActiveEntry(); ok && alias2 == activeAlias && source2 == activeSource {
@@ -1569,7 +1571,10 @@ func (a *App) syncSessionChrome() {
 			// Use zero duration for now — ticker in termPane will refresh title; header refreshes on sync only.
 			// For precise uptime, read from termPane's session (best-effort).
 			_ = started
-			a.sessionHeader.SetSession(activeAlias, host, activeSource, a.termPane.ActiveUptime(), a.termFocused)
+			if port == "" {
+				port = "22"
+			}
+			a.sessionHeader.SetSessionWithPort(activeAlias, host, port, activeSource, a.termPane.ActiveUptime(), a.termFocused)
 		}
 	}
 }
