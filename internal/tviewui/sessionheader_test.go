@@ -2,6 +2,7 @@ package tviewui_test
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,11 +140,14 @@ func TestSessionHeaderPingSlot(t *testing.T) {
 
 func TestSessionHeaderPingFollowsActiveSession(t *testing.T) {
 	h := tviewui.NewSessionHeader()
-	// track dial targets
+	// track dial targets — guarded because pingLoop probes concurrently
+	var mu sync.Mutex
 	var dialTargets []string
 	h.SetDialFuncForTest(func(host, port string) (int, bool) {
 		time.Sleep(50 * time.Millisecond)
+		mu.Lock()
 		dialTargets = append(dialTargets, host+":"+port)
+		mu.Unlock()
 		return 42, true
 	})
 
@@ -163,7 +167,9 @@ func TestSessionHeaderPingFollowsActiveSession(t *testing.T) {
 	}
 
 	// switching active key resets to probing and retargets
+	mu.Lock()
 	dialTargets = nil
+	mu.Unlock()
 	h.SetSessionWithPort("host-b", "10.0.0.2", "2222", "vw:work", 0, true)
 	if !strings.Contains(h.Text(), "[ ·· ms]") {
 		t.Errorf("after switch to host-b, want probing [ ·· ms], got %q", h.Text())
@@ -202,6 +208,7 @@ func TestSessionHeaderPingFollowsActiveSession(t *testing.T) {
 	if got := h.PingTargetForTest(); got != "1.2.3.4:22" {
 		t.Errorf("empty port target = %q, want 1.2.3.4:22", got)
 	}
+	h.Clear()
 }
 
 // helpers
