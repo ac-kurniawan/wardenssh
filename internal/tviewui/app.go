@@ -154,7 +154,6 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 
 	a.right = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.tabBar.Primitive(), 1, 0, false).
-		AddItem(a.sessionHeader.Primitive(), 1, 0, false).
 		AddItem(a.termPane.Primitive(), 0, 1, false)
 
 	// Content: column flex. Left takes full width when no session; right
