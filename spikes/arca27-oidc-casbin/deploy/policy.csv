@@ -1,0 +1,13 @@
+# ARCA-27 spike — role -> permission policies (module.resource.action)
+# p, role, permission-pattern  (globMatch, see deploy/model.conf)
+p, admin, *
+p, accountant, accounting.*
+p, accountant, assets.asset.read
+p, asset-manager, assets.*
+p, viewer, *.read
+
+# g, user-subject, role — roles granted to user subjects.
+# Seeded examples only; real OIDC subjects are bound dynamically at login
+# time (see internal/authz/enforcer.go EnsureBinding).
+g, admin-user, admin
+g, viewer-user, viewer

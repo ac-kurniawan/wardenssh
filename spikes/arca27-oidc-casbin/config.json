@@ -1,0 +1,14 @@
+{
+  "server": {
+    "port": 7777,
+    "base_url": "http://localhost:7777"
+  },
+  "oidc": {
+    "scopes": ["openid", "profile", "email", "offline_access"],
+    "cookie_name": "arca27_session"
+  },
+  "authz": {
+    "model_path": "deploy/model.conf",
+    "policy_path": "deploy/policy.csv"
+  }
+}
