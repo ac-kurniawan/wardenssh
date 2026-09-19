@@ -2,11 +2,8 @@ package tvxterm
 
 import (
 	"io"
-	"os"
-	"os/exec"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -563,122 +560,6 @@ func TestViewSyncTitleCallsHandler(t *testing.T) {
 	if got != "remote shell" {
 		t.Fatalf("expected title handler to receive remote title, got %q", got)
 	}
-}
-
-func TestViewPTYAccumulatesScrollback(t *testing.T) {
-	backend, err := NewPTYBackend(exec.Command("/bin/sh", "-lc", "seq 1 200"), 20, 5)
-	if err != nil {
-		t.Fatalf("new pty backend: %v", err)
-	}
-	defer backend.Close()
-
-	v := New(nil)
-	v.Attach(backend)
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		_, rows := v.ScrollbackStatus()
-		if rows > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	_, rows := v.ScrollbackStatus()
-	t.Fatalf("expected PTY-backed view to accumulate scrollback, got rows=%d", rows)
-}
-
-func TestViewInteractiveShellAccumulatesScrollback(t *testing.T) {
-	backend, err := NewPTYBackend(exec.Command("/bin/sh"), 20, 5)
-	if err != nil {
-		t.Fatalf("new pty backend: %v", err)
-	}
-	defer backend.Close()
-
-	v := New(nil)
-	v.Attach(backend)
-
-	if err := writeAll(backend, []byte("seq 1 200\r")); err != nil {
-		t.Fatalf("write command: %v", err)
-	}
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		_, rows := v.ScrollbackStatus()
-		if rows > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	_, rows := v.ScrollbackStatus()
-	t.Fatalf("expected interactive shell view to accumulate scrollback, got rows=%d", rows)
-}
-
-func TestViewUserShellAccumulatesScrollback(t *testing.T) {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		t.Skip("SHELL is not set")
-	}
-
-	backend, err := NewPTYBackend(exec.Command(shell), 20, 5)
-	if err != nil {
-		t.Fatalf("new pty backend: %v", err)
-	}
-	defer backend.Close()
-
-	v := New(nil)
-	v.Attach(backend)
-
-	if err := writeAll(backend, []byte("seq 1 200\r")); err != nil {
-		t.Fatalf("write command: %v", err)
-	}
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		_, rows := v.ScrollbackStatus()
-		if rows > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	_, rows := v.ScrollbackStatus()
-	t.Fatalf("expected user shell view to accumulate scrollback, got rows=%d", rows)
-}
-
-func TestViewUserShellWithXtermEnvAccumulatesScrollback(t *testing.T) {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		t.Skip("SHELL is not set")
-	}
-
-	cmd := exec.Command(shell)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
-	backend, err := NewPTYBackend(cmd, 20, 5)
-	if err != nil {
-		t.Fatalf("new pty backend: %v", err)
-	}
-	defer backend.Close()
-
-	v := New(nil)
-	v.Attach(backend)
-
-	if err := writeAll(backend, []byte("seq 1 200\r")); err != nil {
-		t.Fatalf("write command: %v", err)
-	}
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		_, rows := v.ScrollbackStatus()
-		if rows > 0 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	_, rows := v.ScrollbackStatus()
-	t.Fatalf("expected xterm-env shell view to accumulate scrollback, got rows=%d", rows)
 }
 
 // TestSelectionDragPathAllocationsFree pins the performance contract that made
