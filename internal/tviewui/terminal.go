@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blacknon/tvxterm"
+	tvxterm "github.com/ac-kurniawan/wardenssh/third_party/tvxterm"
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
