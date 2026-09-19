@@ -5,7 +5,6 @@ go 1.26.5
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/aymanbagabas/go-pty v0.2.3
-	github.com/blacknon/tvxterm v0.1.5
 	github.com/gdamore/tcell/v2 v2.13.10
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/mattn/go-runewidth v0.0.16

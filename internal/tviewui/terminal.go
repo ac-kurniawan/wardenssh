@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/blacknon/tvxterm"
+	tvxterm "github.com/ac-kurniawan/wardenssh/third_party/tvxterm"
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
@@ -674,15 +674,21 @@ func (p *TerminalPane) startTitleTicker() {
 		return
 	}
 	stop := make(chan struct{})
+	ticker := time.NewTicker(1 * time.Second)
 	p.stopTitle = stop
-	p.titleTicker = time.NewTicker(1 * time.Second)
+	p.titleTicker = ticker
 	p.tickerOn = true
 	p.mu.Unlock()
 
+	// The goroutine reads its OWN ticker/stop handles captured at spawn time.
+	// stopTitleTicker may nil the pane fields under the lock while this
+	// goroutine is still in flight — dereferencing p.titleTicker here would be
+	// a data race and a nil-pointer panic (observed on macOS CI).
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
-			case <-p.titleTicker.C:
+			case <-ticker.C:
 				p.mu.Lock()
 				hasSession := len(p.sessions) > 0
 				p.mu.Unlock()
