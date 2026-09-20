@@ -1686,6 +1686,17 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 			a.showScopeModal()
 			return nil
 		}
+		// Ctrl+PgUp / Ctrl+PgDn: cycle between session tabs.
+		if event.Key() == tcell.KeyPgDn && event.Modifiers()&tcell.ModCtrl != 0 {
+			a.termPane.CycleSession(1)
+			a.syncSessionChrome()
+			return nil
+		}
+		if event.Key() == tcell.KeyPgUp && event.Modifiers()&tcell.ModCtrl != 0 {
+			a.termPane.CycleSession(-1)
+			a.syncSessionChrome()
+			return nil
+		}
 		switch event.Key() {
 		case tcell.KeyCtrlC:
 			// Ctrl+C with an active selection copies it (like a terminal

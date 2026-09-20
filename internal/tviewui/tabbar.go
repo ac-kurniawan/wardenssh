@@ -93,7 +93,9 @@ func (b *SessionTabBar) rebuild() {
 		// Capture key for click handler
 		k := key
 		tv.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
-			if action == tview.MouseLeftClick {
+			// Fire on MouseLeftDown (not Click): tview's default MouseHandler
+			// consumes MouseLeftDown to setFocus, so MouseLeftClick never fires.
+			if action == tview.MouseLeftDown {
 				if b.onSelect != nil {
 					b.onSelect(k)
 				}

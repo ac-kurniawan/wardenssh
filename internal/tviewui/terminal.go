@@ -810,6 +810,36 @@ func (p *TerminalPane) mostRecentUnlocked() string {
 	return ""
 }
 
+// CycleSession activates the session at offset from the current active one
+// (offset +1 = next, -1 = previous), wrapping around. No-op with <2 sessions.
+func (p *TerminalPane) CycleSession(offset int) {
+	p.mu.Lock()
+	n := len(p.order)
+	if n < 2 {
+		p.mu.Unlock()
+		return
+	}
+	// Find current position in order.
+	idx := -1
+	for i, k := range p.order {
+		if k == p.active {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		p.mu.Unlock()
+		return
+	}
+	next := ((idx+offset)%n + n) % n
+	p.active = p.order[next]
+	key := p.active
+	p.mu.Unlock()
+	p.pages.SwitchToPage(pageName(key))
+	p.RefreshActiveTitle()
+	p.startPingForActive()
+}
+
 // Close terminates all sessions and resets the pane to the status page.
 func (p *TerminalPane) Close() {
 	p.stopTitleTicker()
