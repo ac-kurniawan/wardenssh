@@ -12,6 +12,7 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultcrypto"
 )
 
 // Source adapts a vaultclient.Session + sync ciphers into vault.Source.
@@ -32,6 +33,36 @@ func NewSource(name string, sess *vaultclient.Session, ciphers []vaultclient.Cip
 // Name satisfies vault.Source.
 func (s *Source) Name() string { return s.name }
 
+// cipherKeys resolves the key pair used to encrypt an item's fields. Legacy
+// items use the account key directly; newer items carry a per-item key wrapped
+// under the account key.
+func (s *Source) cipherKeys(wrapped string) (enc, mac []byte, err error) {
+	if wrapped == "" {
+		return s.session.SymEnc, s.session.SymMac, nil
+	}
+	return vaultcrypto.UnwrapCipherKey(s.session.SymEnc, s.session.SymMac, wrapped)
+}
+
+// EncryptField encrypts one cipher field with the cipher's per-item key, or
+// with the account key when wrappedKey is empty (legacy item).
+func (s *Source) EncryptField(wrappedKey, plain string) (string, error) {
+	encKey, macKey, err := s.cipherKeys(wrappedKey)
+	if err != nil {
+		return "", err
+	}
+	return vaultcrypto.Encrypt(encKey, macKey, []byte(plain))
+}
+
+// DecryptField decrypts one cipher field with the cipher's per-item key, or
+// with the account key when wrappedKey is empty (legacy item).
+func (s *Source) DecryptField(wrappedKey, encrypted string) ([]byte, error) {
+	encKey, macKey, err := s.cipherKeys(wrappedKey)
+	if err != nil {
+		return nil, err
+	}
+	return vaultcrypto.Decrypt(encKey, macKey, encrypted)
+}
+
 // Items satisfies vault.Source: returns SSH-Key items with a populated 'host'
 // custom field (Q32/B) plus Login items tagged type==SSH. Item names + custom
 // fields are decrypted eagerly; the private key / login credentials stay
@@ -39,14 +70,22 @@ func (s *Source) Name() string { return s.name }
 func (s *Source) Items() ([]vault.Item, error) {
 	var out []vault.Item
 	for _, ci := range s.ciphers {
+		// Resolve the key pair used to encrypt this item's fields: the account
+		// key for legacy items, the item's own wrapped key (ci.Key) for newer
+		// cipher-key-encrypted items.
+		encKey, macKey, err := s.cipherKeys(ci.Key)
+		if err != nil {
+			continue // skip items whose per-item key won't unwrap
+		}
+
 		// Decrypt the item name (display label, Q30/A).
-		nameBytes, err := s.session.DecryptField(ci.Name)
+		nameBytes, err := vaultcrypto.Decrypt(encKey, macKey, ci.Name)
 		if err != nil {
 			continue // skip items we can't decrypt
 		}
 
 		// Read custom fields via configurable names (Q16/B).
-		cf := readCustomFields(s.session, ci.Fields, s.fields)
+		cf := readCustomFields(encKey, macKey, ci.Fields, s.fields)
 
 		// Q32/B: only items with a populated 'host' custom field are launchable.
 		if cf.HostName == "" {
@@ -58,7 +97,7 @@ func (s *Source) Items() ([]vault.Item, error) {
 			// Login item tagged type=SSH -> password-credential host.
 			// Username is decrypted for display (User); the credentials stay
 			// encrypted for lazy decrypt at connect time (Q8/C pattern).
-			uname, _ := s.session.DecryptField(ci.Login.Username)
+			uname, _ := vaultcrypto.Decrypt(encKey, macKey, ci.Login.Username)
 			item := vault.Item{
 				ID:          ci.ID,
 				Name:        string(nameBytes),
@@ -69,6 +108,7 @@ func (s *Source) Items() ([]vault.Item, error) {
 				ProxyJump:   cf.ProxyJump,
 				EncUsername: ci.Login.Username,
 				EncPassword: ci.Login.Password,
+				CipherKey:   ci.Key,
 			}
 			if item.User == "" {
 				item.User = cf.User
@@ -84,6 +124,7 @@ func (s *Source) Items() ([]vault.Item, error) {
 				Port:          cf.Port,
 				ProxyJump:     cf.ProxyJump,
 				EncPrivateKey: ci.SshKey.PrivateKey,
+				CipherKey:     ci.Key,
 			}
 			if ci.SshKey.Passphrase != "" {
 				item.EncPassphrase = ci.SshKey.Passphrase
@@ -97,11 +138,15 @@ func (s *Source) Items() ([]vault.Item, error) {
 // DecryptLogin satisfies vault.Source: lazily decrypts the item's native
 // login username + password (Q8/C pattern). Called at connect time.
 func (s *Source) DecryptLogin(item vault.Item) ([]byte, []byte, error) {
-	username, err := s.session.DecryptField(item.EncUsername)
+	encKey, macKey, err := s.cipherKeys(item.CipherKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("vaultadapter: unwrap cipher key: %w", err)
+	}
+	username, err := vaultcrypto.Decrypt(encKey, macKey, item.EncUsername)
 	if err != nil {
 		return nil, nil, fmt.Errorf("vaultadapter: decrypt login username: %w", err)
 	}
-	password, err := s.session.DecryptField(item.EncPassword)
+	password, err := vaultcrypto.Decrypt(encKey, macKey, item.EncPassword)
 	if err != nil {
 		return nil, nil, fmt.Errorf("vaultadapter: decrypt login password: %w", err)
 	}
@@ -111,7 +156,11 @@ func (s *Source) DecryptLogin(item vault.Item) ([]byte, []byte, error) {
 // DecryptPrivateKey satisfies vault.Source: lazily decrypts the item's private
 // key field (Q8/C) using the session's symmetric key. Called at connect time.
 func (s *Source) DecryptPrivateKey(item vault.Item, passphrase string) ([]byte, error) {
-	decrypted, err := s.session.DecryptField(item.EncPrivateKey)
+	encKey, macKey, err := s.cipherKeys(item.CipherKey)
+	if err != nil {
+		return nil, fmt.Errorf("vaultadapter: unwrap cipher key: %w", err)
+	}
+	decrypted, err := vaultcrypto.Decrypt(encKey, macKey, item.EncPrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("vaultadapter: decrypt private key: %w", err)
 	}
@@ -145,7 +194,7 @@ type customFieldValues struct {
 
 // readCustomFields decrypts the cipher's custom fields and maps them to
 // connection directives by name (configurable via config.CustomFields).
-func readCustomFields(sess *vaultclient.Session, fields []vaultclient.CustomField, cf config.CustomFields) customFieldValues {
+func readCustomFields(encKey, macKey []byte, fields []vaultclient.CustomField, cf config.CustomFields) customFieldValues {
 	var v customFieldValues
 	// Build a map of decrypted field-name → decrypted value.
 	decrypted := make(map[string]string, len(fields))
@@ -153,11 +202,11 @@ func readCustomFields(sess *vaultclient.Session, fields []vaultclient.CustomFiel
 		if f.Value == "" {
 			continue
 		}
-		nameBytes, err := sess.DecryptField(f.Name)
+		nameBytes, err := vaultcrypto.Decrypt(encKey, macKey, f.Name)
 		if err != nil {
 			continue
 		}
-		valBytes, err := sess.DecryptField(f.Value)
+		valBytes, err := vaultcrypto.Decrypt(encKey, macKey, f.Value)
 		if err != nil {
 			continue
 		}
@@ -265,4 +314,3 @@ func (s *Source) RemoveCipher(id string) {
 // Compile-time check: Source satisfies vault.Source and Client satisfies vault.Client.
 var _ vault.Source = (*Source)(nil)
 var _ vault.Client = (*Client)(nil)
-

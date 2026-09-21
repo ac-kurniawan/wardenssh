@@ -30,6 +30,10 @@ type Item struct {
 	// lazily decrypted at connect time via DecryptLogin.
 	EncUsername string
 	EncPassword string
+	// CipherKey is the item's wrapped per-item key (the cipher's "key" field),
+	// empty for legacy items. Lazy-decrypt unwraps it under the session key to
+	// obtain the item's own enc/mac pair.
+	CipherKey string
 }
 
 // Source is one named, authenticated vault (a source label like "vw:personal").

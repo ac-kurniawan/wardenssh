@@ -21,6 +21,7 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultcrypto"
 )
 
 func TestAppNewWithoutVaults(t *testing.T) {
@@ -1150,6 +1151,115 @@ func TestApp_UpdateConnection_VaultTarget(t *testing.T) {
 	}
 }
 
+// TestApp_UpdateConnection_CipherKeyItem: editing an item encrypted with a
+// per-item cipher key must re-encrypt its fields under THAT key, not the
+// account key. Re-encrypting under the account key while leaving cipher.key
+// set makes the item undecryptable — it would vanish from the host list on
+// the next read.
+func TestApp_UpdateConnection_CipherKeyItem(t *testing.T) {
+	symKey := bytes.Repeat([]byte{0x04}, 64)
+	sess := &vaultclient.Session{
+		AccessToken: "ck-token",
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+	}
+
+	// Per-item key, wrapped under the account key (as the server stores it).
+	itemSym := bytes.Repeat([]byte{0x09}, 64)
+	itemEnc, itemMac := itemSym[:32], itemSym[32:]
+	wrappedKey, err := vaultcrypto.Encrypt(sess.SymEnc, sess.SymMac, itemSym)
+	if err != nil {
+		t.Fatalf("wrap item key: %v", err)
+	}
+	encItem := func(plain string) string {
+		s, err := vaultcrypto.Encrypt(itemEnc, itemMac, []byte(plain))
+		if err != nil {
+			t.Fatalf("Encrypt(%q): %v", plain, err)
+		}
+		return s
+	}
+
+	var putCipher vaultclient.Cipher
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers/ck-cipher-1", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&putCipher)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(putCipher)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cf := config.CustomFields{Host: "host", User: "user", Port: "port", ProxyJump: "proxyjump", Type: "type"}
+	src := vaultadapter.NewSource("vw", sess, []vaultclient.Cipher{
+		{
+			ID:   "ck-cipher-1",
+			Name: encItem("ck-host"),
+			Key:  wrappedKey,
+			Type: 5,
+			SshKey: &vaultclient.SshKey{
+				PrivateKey:     encItem("ITEM-KEY-MATERIAL"),
+				PublicKey:      encItem("ssh-ed25519 AAAA"),
+				KeyFingerprint: encItem("SHA256:xyz"),
+			},
+			Fields: []vaultclient.CustomField{
+				{Name: encItem("host"), Value: encItem("10.9.9.9"), Type: 0},
+				{Name: encItem("user"), Value: encItem("root"), Type: 0},
+			},
+		},
+	}, cf)
+	app := tviewui.New(hosts.NewList(nil), tviewui.Deps{
+		VaultCli:     vaultadapter.NewClient(src),
+		CustomFields: cf,
+	}, []config.Vault{{Name: "vw", Server: srv.URL, Email: "u@example.com"}})
+
+	params := tviewui.CreateParams{
+		Alias:    "ck-renamed",
+		Target:   "vw",
+		HostName: "10.9.9.100",
+		User:     "deploy",
+		AuthKind: "key",
+	}
+	oldEntry := hosts.Entry{Alias: "ck-host", HostName: "10.9.9.9", User: "root", Source: "vw", AuthKind: "key"}
+	if err := app.HandleUpdateConnection(oldEntry, params); err != nil {
+		t.Fatalf("HandleUpdateConnection: %v", err)
+	}
+
+	// The wrapped item key must survive the round-trip.
+	if putCipher.Key != wrappedKey {
+		t.Errorf("PUT body dropped the cipher key")
+	}
+
+	// Every re-encrypted field must decrypt under the ITEM key.
+	nameBytes, err := vaultcrypto.Decrypt(itemEnc, itemMac, putCipher.Name)
+	if err != nil {
+		t.Fatalf("Name not re-encrypted under item key: %v", err)
+	}
+	if string(nameBytes) != "ck-renamed" {
+		t.Errorf("Name = %q, want ck-renamed", nameBytes)
+	}
+
+	gotHost := false
+	for _, f := range putCipher.Fields {
+		n, err := vaultcrypto.Decrypt(itemEnc, itemMac, f.Name)
+		if err != nil {
+			t.Fatalf("field name not under item key: %v", err)
+		}
+		if string(n) == "host" {
+			v, err := vaultcrypto.Decrypt(itemEnc, itemMac, f.Value)
+			if err != nil {
+				t.Fatalf("host value not under item key: %v", err)
+			}
+			if string(v) == "10.9.9.100" {
+				gotHost = true
+			}
+		}
+	}
+	if !gotHost {
+		t.Error("updated host value not re-encrypted under the item key")
+	}
+}
+
 func TestAppScopeModalLifecycle(t *testing.T) {
 	hl := sampleHostList()
 	app := tviewui.New(hl, tviewui.Deps{}, nil)
@@ -1273,4 +1383,3 @@ func TestApp_UpdateConnection_Refusals(t *testing.T) {
 		t.Errorf("expected edit modal to be refused for wildcard connection")
 	}
 }
-

@@ -52,6 +52,18 @@ func UnwrapSymKey(encKey, macKey []byte, protected string) ([]byte, error) {
 	return out, nil
 }
 
+// UnwrapCipherKey decrypts a cipher's per-item key (the cipher's "key" field)
+// under the account/org symmetric key, returning the item's enc(32)||mac(32)
+// halves. BitWarden wraps a fresh 64-byte item key with the vault key; items
+// carrying one must be decrypted with it, not with the account key.
+func UnwrapCipherKey(encKey, macKey []byte, wrapped string) (itemEnc, itemMac []byte, err error) {
+	key, err := UnwrapSymKey(encKey, macKey, wrapped)
+	if err != nil {
+		return nil, nil, err
+	}
+	return key[:32], key[32:], nil
+}
+
 // keep import used for the byte-order helper below if needed; harmless stub.
 var _ = binary.LittleEndian
 var _ = hmac.New
