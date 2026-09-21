@@ -83,6 +83,75 @@ func TestSourceItemsDecryptsFieldsAndFiltersByHost(t *testing.T) {
 	}
 }
 
+// TestSourceItemsDecryptsCipherKeyWrappedItem: an SSH-Key item created by a
+// modern BitWarden/VaultWarden client carries a per-item key in `cipher.key`
+// wrapped under the account key. Fields must decrypt with the unwrapped item
+// key, not the account key — this is the "new item invisible" regression.
+func TestSourceItemsDecryptsCipherKeyWrappedItem(t *testing.T) {
+	sess := fakeSession(t)
+	cf := config.Default().CustomFields
+
+	// Build a per-item key and wrap it under the account key (the server
+	// returns the wrapped blob in cipher.key).
+	itemEnc := make([]byte, 32)
+	itemMac := make([]byte, 32)
+	_, _ = rand.Read(itemEnc)
+	_, _ = rand.Read(itemMac)
+	itemKey := append(append([]byte{}, itemEnc...), itemMac...)
+	wrappedKey, err := vaultcrypto.Encrypt(sess.SymEnc, sess.SymMac, itemKey)
+	if err != nil {
+		t.Fatalf("wrap item key: %v", err)
+	}
+
+	// Encrypt every field under the ITEM key (not the account key).
+	encWith := func(plain string) string {
+		ct, err := vaultcrypto.Encrypt(itemEnc, itemMac, []byte(plain))
+		if err != nil {
+			t.Fatalf("Encrypt: %v", err)
+		}
+		return ct
+	}
+
+	ciphers := []vaultclient.Cipher{
+		{
+			ID:   "ck-1",
+			Name: encWith("new-host"),
+			Key:  wrappedKey,
+			SshKey: &vaultclient.SshKey{PrivateKey: encWith("ITEM-PRIVATE-KEY")},
+			Fields: []vaultclient.CustomField{
+				{Name: encWith("host"), Value: encWith("192.168.50.7"), Type: 0},
+				{Name: encWith("user"), Value: encWith("deploy"), Type: 0},
+			},
+		},
+	}
+	src := vaultadapter.NewSource("vw:personal", sess, ciphers, cf)
+	items, err := src.Items()
+	if err != nil {
+		t.Fatalf("Items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1 (cipher-key item must decrypt)", len(items))
+	}
+	if items[0].Name != "new-host" {
+		t.Errorf("Name = %q, want new-host", items[0].Name)
+	}
+	if items[0].HostName != "192.168.50.7" {
+		t.Errorf("HostName = %q, want 192.168.50.7", items[0].HostName)
+	}
+	if items[0].User != "deploy" {
+		t.Errorf("User = %q, want deploy", items[0].User)
+	}
+
+	// Lazy private-key decrypt must also use the item key.
+	dec, err := src.DecryptPrivateKey(items[0], "")
+	if err != nil {
+		t.Fatalf("DecryptPrivateKey: %v", err)
+	}
+	if string(dec) != "ITEM-PRIVATE-KEY" {
+		t.Errorf("decrypted = %q, want ITEM-PRIVATE-KEY", dec)
+	}
+}
+
 // TestSourceDecryptPrivateKey: lazy decrypt returns the original plaintext key.
 func TestSourceDecryptPrivateKey(t *testing.T) {
 	sess := fakeSession(t)

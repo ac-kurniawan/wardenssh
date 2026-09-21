@@ -275,6 +275,12 @@ type Cipher struct {
 	// vault parses as an EncString and crashes on ("" has no '.' type prefix:
 	// "EncString(InvalidTypeSymm { enc_type: \"0\", parts: 1 })").
 	Notes string `json:"notes,omitempty"`
+	// Key is the item's wrapped per-item key (cipher-key encryption). Newer
+	// BitWarden/VaultWarden clients wrap a fresh 64-byte key under the account
+	// key and encrypt the item's fields with it; the account key alone cannot
+	// decrypt those fields. Empty for legacy items (encrypted with the account
+	// key directly). Never posted: the server generates/keeps it.
+	Key string `json:"key,omitempty"`
 	// DeletedDate is set (non-empty) when the item is in the trash. Both
 	// BitWarden and VaultWarden return trashed ciphers from /api/ciphers with
 	// this field populated; Sync skips them so they never surface in the host
