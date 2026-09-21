@@ -77,3 +77,59 @@ func TestUnwrapRejectsBadMAC(t *testing.T) {
 		t.Error("UnwrapSymKey with wrong macKey: want error, got nil")
 	}
 }
+
+// TestUnwrapCipherKeyRoundTrip: a per-item cipher key is a 64-byte symmetric
+// key wrapped under the account key (type-2). Unwrapping must recover the
+// item's own enc(32)||mac(32) pair. New VaultWarden/BitWarden items carry
+// this wrapped key; without unwrapping it, their fields are undecryptable
+// under the account key (HMAC failure) and the item silently disappears.
+func TestUnwrapCipherKeyRoundTrip(t *testing.T) {
+	acctEnc := make([]byte, 32)
+	acctMac := make([]byte, 32)
+	_, _ = rand.Read(acctEnc)
+	_, _ = rand.Read(acctMac)
+
+	itemEnc := make([]byte, 32)
+	itemMac := make([]byte, 32)
+	_, _ = rand.Read(itemEnc)
+	_, _ = rand.Read(itemMac)
+	itemKey := append(append([]byte{}, itemEnc...), itemMac...)
+
+	wrapped, err := vaultcrypto.Encrypt(acctEnc, acctMac, itemKey)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	gotEnc, gotMac, err := vaultcrypto.UnwrapCipherKey(acctEnc, acctMac, wrapped)
+	if err != nil {
+		t.Fatalf("UnwrapCipherKey: %v", err)
+	}
+	if string(gotEnc) != string(itemEnc) {
+		t.Error("item enc key mismatch")
+	}
+	if string(gotMac) != string(itemMac) {
+		t.Error("item mac key mismatch")
+	}
+}
+
+// TestUnwrapCipherKeyRejectsWrongAccountKey: a wrapped item key must not
+// unwrap under the wrong account key.
+func TestUnwrapCipherKeyRejectsWrongAccountKey(t *testing.T) {
+	acctEnc := make([]byte, 32)
+	acctMac := make([]byte, 32)
+	_, _ = rand.Read(acctEnc)
+	_, _ = rand.Read(acctMac)
+
+	itemKey := make([]byte, 64)
+	_, _ = rand.Read(itemKey)
+	wrapped, err := vaultcrypto.Encrypt(acctEnc, acctMac, itemKey)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	wrongMac := make([]byte, 32)
+	_, _ = rand.Read(wrongMac)
+	if _, _, err := vaultcrypto.UnwrapCipherKey(acctEnc, wrongMac, wrapped); err == nil {
+		t.Error("UnwrapCipherKey with wrong account mac: want error, got nil")
+	}
+}
