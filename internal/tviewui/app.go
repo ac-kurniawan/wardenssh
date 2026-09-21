@@ -1137,15 +1137,16 @@ func (a *App) handleUpdateVaultConnection(oldEntry hosts.Entry, params CreatePar
 
 	vc := vaultclientNew(serverURL)
 
-	// 1. Re-encrypt Name
-	encName, err := sess.EncryptField(params.Alias)
+	// 1. Re-encrypt Name under the cipher's own key (per-item key when present,
+	// account key for legacy items).
+	encName, err := targetSource.EncryptField(cachedCipher.Key, params.Alias)
 	if err != nil {
 		return fmt.Errorf("encrypt name: %w", err)
 	}
 	cachedCipher.Name = encName
 
 	// 2. Update custom fields, preserving unknown/unmanaged custom fields
-	updatedFields, err := updateCipherCustomFields(sess, cachedCipher.Fields, cf, params)
+	updatedFields, err := updateCipherCustomFields(targetSource, cachedCipher.Key, cachedCipher.Fields, cf, params)
 	if err != nil {
 		return fmt.Errorf("update custom fields: %w", err)
 	}
@@ -1154,14 +1155,14 @@ func (a *App) handleUpdateVaultConnection(oldEntry hosts.Entry, params CreatePar
 	// 3. Update password/username if Login cipher
 	if cachedCipher.Login != nil {
 		if params.User != "" {
-			encUser, err := sess.EncryptField(params.User)
+			encUser, err := targetSource.EncryptField(cachedCipher.Key, params.User)
 			if err != nil {
 				return fmt.Errorf("encrypt username: %w", err)
 			}
 			cachedCipher.Login.Username = encUser
 		}
 		if params.Password != "" {
-			encPass, err := sess.EncryptField(params.Password)
+			encPass, err := targetSource.EncryptField(cachedCipher.Key, params.Password)
 			if err != nil {
 				return fmt.Errorf("encrypt password: %w", err)
 			}
@@ -1194,7 +1195,7 @@ func (a *App) handleUpdateVaultConnection(oldEntry hosts.Entry, params CreatePar
 	return nil
 }
 
-func updateCipherCustomFields(sess *vaultclient.Session, existing []vaultclient.CustomField, cf config.CustomFields, params CreateParams) ([]vaultclient.CustomField, error) {
+func updateCipherCustomFields(src *vaultadapter.Source, wrappedKey string, existing []vaultclient.CustomField, cf config.CustomFields, params CreateParams) ([]vaultclient.CustomField, error) {
 	desired := map[string]string{
 		cf.Host:      params.HostName,
 		cf.User:      params.User,
@@ -1207,7 +1208,7 @@ func updateCipherCustomFields(sess *vaultclient.Session, existing []vaultclient.
 	var result []vaultclient.CustomField
 
 	for _, f := range existing {
-		nameBytes, err := sess.DecryptField(f.Name)
+		nameBytes, err := src.DecryptField(wrappedKey, f.Name)
 		if err != nil {
 			result = append(result, f)
 			continue
@@ -1216,7 +1217,7 @@ func updateCipherCustomFields(sess *vaultclient.Session, existing []vaultclient.
 		if newVal, isManaged := desired[nameStr]; isManaged {
 			handled[nameStr] = true
 			if newVal != "" {
-				encVal, err := sess.EncryptField(newVal)
+				encVal, err := src.EncryptField(wrappedKey, newVal)
 				if err != nil {
 					return nil, err
 				}
@@ -1230,7 +1231,7 @@ func updateCipherCustomFields(sess *vaultclient.Session, existing []vaultclient.
 
 	for k, val := range desired {
 		if !handled[k] && val != "" {
-			encField, err := encryptCustomField(sess, k, val)
+			encField, err := encryptCustomFieldWithSource(src, wrappedKey, k, val)
 			if err != nil {
 				return nil, err
 			}
@@ -1304,6 +1305,22 @@ func encryptCustomField(sess *vaultclient.Session, name, val string) (vaultclien
 		return vaultclient.CustomField{}, err
 	}
 	encVal, err := sess.EncryptField(val)
+	if err != nil {
+		return vaultclient.CustomField{}, err
+	}
+	return vaultclient.CustomField{
+		Name:  encName,
+		Value: encVal,
+		Type:  0,
+	}, nil
+}
+
+func encryptCustomFieldWithSource(src *vaultadapter.Source, wrappedKey, name, val string) (vaultclient.CustomField, error) {
+	encName, err := src.EncryptField(wrappedKey, name)
+	if err != nil {
+		return vaultclient.CustomField{}, err
+	}
+	encVal, err := src.EncryptField(wrappedKey, val)
 	if err != nil {
 		return vaultclient.CustomField{}, err
 	}
