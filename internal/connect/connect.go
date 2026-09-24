@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 
 	"golang.org/x/crypto/ssh"
 
@@ -295,11 +296,42 @@ func findVaultItem(vc vault.Client, entry hosts.Entry) (vault.Item, vault.Source
 	return vault.Item{}, nil, fmt.Errorf("item %q not found in source %q", entry.Alias, entry.Source)
 }
 
+var (
+	agentPipeOnce sync.Once
+	agentPipe     string
+)
+
 // defaultAgentPipe returns a platform-appropriate agent pipe path.
+// On Unix the socket lives in a per-user 0700 directory and the file
+// name includes the pid, so two processes do not share a path and other
+// users cannot traverse the directory. One process always gets the same
+// path. Windows keeps the named pipe.
 func defaultAgentPipe() string {
-	if runtime.GOOS == "windows" {
-		return `\\.\pipe\wardenssh-agent`
+	agentPipeOnce.Do(func() {
+		if runtime.GOOS == "windows" {
+			agentPipe = `\\.\pipe\wardenssh-agent`
+			return
+		}
+		dir := perUserAgentDir()
+		agentPipe = filepath.Join(dir, fmt.Sprintf("agent-%d.sock", os.Getpid()))
+	})
+	return agentPipe
+}
+
+func perUserAgentDir() string {
+	candidates := []string{}
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+		candidates = append(candidates, filepath.Join(d, "wardenssh"))
 	}
-	// Unix: use a stable path in the user's runtime dir.
-	return filepath.Join("/tmp", "wardenssh-agent.sock")
+	candidates = append(candidates, filepath.Join(os.TempDir(), fmt.Sprintf("wardenssh-%d", os.Getuid())))
+	for _, dir := range candidates {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			continue
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			continue
+		}
+		return dir
+	}
+	return os.TempDir()
 }

@@ -11,9 +11,9 @@ import (
 // into a bounded Ring buffer.
 type Session struct {
 	id, alias, source string
-	pty                pty.Pty
-	cmd                *pty.Cmd
-	ring               *Ring
+	pty               pty.Pty
+	cmd               *pty.Cmd
+	ring              *Ring
 
 	mu      sync.Mutex
 	exited  chan struct{}
@@ -45,15 +45,16 @@ func StartWithEnv(id, alias, source string, argv []string, env []string) (*Sessi
 	c := p.Command(argv[0], argv[1:]...)
 	// Merge parent env with extra env (extra wins deterministically, Q-dedup).
 	c.Env = MergeEnv(env)
+	IsolateProcessGroup(c)
 	if err := c.Start(); err != nil {
 		_ = p.Close()
 		return nil, err
 	}
 	s := &Session{
 		id: id, alias: alias, source: source,
-		pty:   p,
-		cmd:   c,
-		ring:  NewRing(RingCapacity),
+		pty:    p,
+		cmd:    c,
+		ring:   NewRing(RingCapacity),
 		exited: make(chan struct{}),
 	}
 	go s.readLoop()
@@ -89,10 +90,7 @@ func (s *Session) ExitErr() error {
 
 // Kill terminates the child process (best-effort).
 func (s *Session) Kill() error {
-	if s.cmd.Process != nil {
-		return s.cmd.Process.Kill()
-	}
-	return nil
+	return KillProcessTree(s.cmd)
 }
 
 // readLoop drains the PTY master into the ring buffer until EOF.
