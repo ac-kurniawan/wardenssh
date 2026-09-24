@@ -10,6 +10,8 @@ import (
 	"sync"
 
 	pty "github.com/aymanbagabas/go-pty"
+
+	"github.com/ac-kurniawan/wardenssh/internal/session"
 )
 
 // PtyBackend adapts github.com/aymanbagabas/go-pty (cross-platform: ConPTY on
@@ -31,6 +33,7 @@ func NewPtyBackend(cmd *exec.Cmd, cols, rows int) (*PtyBackend, error) {
 	}
 	c := p.Command(cmd.Path, cmd.Args[1:]...)
 	c.Env = cmd.Env
+	session.IsolateProcessGroup(c)
 	if err := c.Start(); err != nil {
 		_ = p.Close()
 		return nil, err
@@ -75,7 +78,7 @@ func (b *PtyBackend) Close() error {
 	var err error
 	b.once.Do(func() {
 		if b.cmd != nil && b.cmd.Process != nil {
-			_ = b.cmd.Process.Kill()
+			_ = session.KillProcessTree(b.cmd)
 			_, _ = b.cmd.Process.Wait()
 		}
 		err = b.pty.Close()
