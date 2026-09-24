@@ -21,7 +21,8 @@ import (
 // built-in scrollbar keeps working.
 type terminalView struct {
 	*tvxterm.View
-	dragging bool // a primary-button selection drag is in progress
+	dragging             bool // a primary-button selection drag is in progress
+	lastDragX, lastDragY int
 }
 
 // newTerminalView builds a WardenSSH-wired tvxterm.View. The app reference is
@@ -35,9 +36,12 @@ func newTerminalView(app *tview.Application, title string) *terminalView {
 
 // MouseHandler routes mouse events for the terminal:
 //
-//   - wheel -> local scrollback scrolling;
+//   - wheel -> local scrollback scrolling; during a selection drag the wheel
+//     also extends the highlight into the newly revealed lines instead of
+//     clearing it;
 //   - primary-button drag -> local text selection (copied to the clipboard on
-//     release); during a drag the view captures subsequent mouse events so
+//     release). Dragging past the top or bottom edge scrolls the local
+//     scrollback. During a drag the view captures subsequent mouse events so
 //     selection keeps tracking even when the pointer leaves the view;
 //   - everything else -> the embedded tvxterm handler (scrollbar, remote mouse
 //     reporting, focus-on-click).
@@ -54,7 +58,7 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 			switch action {
 			case tview.MouseMove:
 				if event.Buttons()&tcell.Button1 != 0 {
-					s.UpdateSelection(event.Position())
+					s.dragSelect(event.Position())
 					return true, s
 				}
 				// Button released without a MouseLeftUp (rare); stop dragging.
@@ -63,46 +67,35 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 				s.dragging = false
 				s.finishSelection()
 				return true, nil
+			case tview.MouseScrollUp:
+				s.scrollSelection(setFocus, -1)
+				return true, s
+			case tview.MouseScrollDown:
+				s.scrollSelection(setFocus, 1)
+				return true, s
+			}
+			return orig(action, event, setFocus)
+		}
+
+		x, y := event.Position()
+		if !s.InRect(x, y) {
+			return orig(action, event, setFocus)
+		}
+
+		switch action {
 		case tview.MouseScrollUp:
-			if !s.HasFocus() {
-				setFocus(s)
-			}
-			s.ScrollbackUp(3)
-			return true, s
+			s.scrollLocal(setFocus, -1)
+			return true, nil
 		case tview.MouseScrollDown:
-			if !s.HasFocus() {
-				setFocus(s)
-			}
-			s.ScrollbackDown(3)
-			return true, s
-		}
-		return orig(action, event, setFocus)
-	}
-
-	x, y := event.Position()
-	if !s.InRect(x, y) {
-		return orig(action, event, setFocus)
-	}
-
-	switch action {
-	case tview.MouseScrollUp:
-		if !s.HasFocus() {
-			setFocus(s)
-		}
-		s.ScrollbackUp(3)
-		return true, nil
-	case tview.MouseScrollDown:
-		if !s.HasFocus() {
-			setFocus(s)
-		}
-		s.ScrollbackDown(3)
-		return true, nil
+			s.scrollLocal(setFocus, 1)
+			return true, nil
 		case tview.MouseLeftDown:
 			if s.onScrollbarColumn(x, y) {
 				// Let the embedded handler drive the scrollbar (jump/drag).
 				return orig(action, event, setFocus)
 			}
 			s.dragging = true
+			s.lastDragX, s.lastDragY = x, y
 			s.StartSelection(x, y)
 			if !s.HasFocus() {
 				setFocus(s)
@@ -111,6 +104,74 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 		}
 		return orig(action, event, setFocus)
 	}
+}
+
+// scrollLocal scrolls the pane's own scrollback. dir < 0 moves toward older
+// lines. An already-focused view is not refocused: Focus() reports focus-in
+// to the remote, and that input path resets the scroll offset.
+func (s *terminalView) scrollLocal(setFocus func(p tview.Primitive), dir int) {
+	if !s.HasFocus() {
+		setFocus(s)
+	}
+	if dir < 0 {
+		s.ScrollbackUp(3)
+		return
+	}
+	s.ScrollbackDown(3)
+}
+
+// scrollSelection scrolls during a held selection and re-anchors the highlight
+// on the pointer so the newly revealed lines join the selection.
+func (s *terminalView) scrollSelection(setFocus func(p tview.Primitive), dir int) {
+	before, _ := s.ScrollbackStatus()
+	s.scrollLocal(setFocus, dir)
+	after, _ := s.ScrollbackStatus()
+	x, y := s.lastDragX, s.lastDragY
+	_, iy, _, ih := s.GetInnerRect()
+	if after != before && ih > 0 {
+		// Wheel moves the buffer under a stationary pointer. Shift the tracked
+		// row by the same number of lines so the selection follows the content
+		// that just scrolled into view.
+		y += after - before
+		if y < iy {
+			y = iy
+		}
+		if y >= iy+ih {
+			y = iy + ih - 1
+		}
+		s.lastDragY = y
+	}
+	s.UpdateSelection(x, y)
+}
+
+// dragSelect updates the selection and, when the pointer is outside the
+// content area, scrolls the local scrollback in that direction.
+func (s *terminalView) dragSelect(x, y int) {
+	s.lastDragX, s.lastDragY = x, y
+	ix, iy, iw, ih := s.GetInnerRect()
+	// Scrollbar column is not selectable text.
+	contentRight := ix + iw
+	if iw >= 2 {
+		contentRight = ix + iw - 1
+	}
+	clampedX, clampedY := x, y
+	switch {
+	case ih > 0 && y < iy:
+		s.ScrollbackUp(1)
+		clampedY = iy
+	case ih > 0 && y >= iy+ih:
+		s.ScrollbackDown(1)
+		clampedY = iy + ih - 1
+	}
+	if iw > 0 {
+		if clampedX < ix {
+			clampedX = ix
+		}
+		if clampedX >= contentRight && contentRight > ix {
+			clampedX = contentRight - 1
+		}
+	}
+	s.UpdateSelection(clampedX, clampedY)
 }
 
 // onScrollbarColumn reports whether (x, y) is on the visible scrollbar column
