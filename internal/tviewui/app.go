@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -74,6 +75,10 @@ type App struct {
 	syncStarted   bool
 	syncTicker    *time.Ticker
 	stopSync      chan struct{}
+	syncLoopDone  chan struct{}
+	syncMu        sync.Mutex // single-flight for TriggerSync
+	syncing       bool
+	eventLoop     atomic.Bool // true while Run's event loop is alive
 }
 
 // New creates the TUI app. If vaults is non-empty, it starts in setup mode.
@@ -206,6 +211,8 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 
 // Run starts the tview application.
 func (a *App) Run() error {
+	a.eventLoop.Store(true)
+	defer a.eventLoop.Store(false)
 	return a.app.Run()
 }
 
@@ -216,7 +223,10 @@ func (a *App) SetScreenForTest(screen tcell.Screen) {
 }
 
 // StopForTest stops the running tview application (tests only).
-func (a *App) StopForTest() { a.app.Stop() }
+func (a *App) StopForTest() {
+	a.eventLoop.Store(false)
+	a.app.Stop()
+}
 
 // ShowTerminalPaneForTest puts the terminal pane into the layout and focuses
 // it (tests only; mirrors showTerminalPane).
@@ -300,8 +310,22 @@ func (a *App) SkipSetup() {
 // that closes when the sync finishes.
 func (a *App) TriggerSync() <-chan struct{} {
 	done := make(chan struct{})
+	a.syncMu.Lock()
+	if a.syncing {
+		a.syncMu.Unlock()
+		close(done)
+		return done
+	}
+	a.syncing = true
+	a.syncMu.Unlock()
+
 	go func() {
 		defer close(done)
+		defer func() {
+			a.syncMu.Lock()
+			a.syncing = false
+			a.syncMu.Unlock()
+		}()
 		if a.deps.VaultCli == nil {
 			return
 		}
@@ -349,10 +373,21 @@ func (a *App) TriggerSync() <-chan struct{} {
 	return done
 }
 
+// queueUpdateDraw runs fn on the tview event loop when the application is
+// running. tview primitives are not safe to touch from the sync goroutine
+// while Run is drawing them. QueueUpdateDraw both applies fn and redraws, and
+// it returns only after fn has run. When the event loop is not running (unit
+// tests that never call Run) the update is applied directly: QueueUpdateDraw
+// would block forever waiting for an event loop that does not exist.
 func (a *App) queueUpdateDraw(fn func()) {
-	if fn != nil {
-		fn()
+	if fn == nil || a.app == nil {
+		return
 	}
+	if !a.eventLoop.Load() {
+		fn()
+		return
+	}
+	a.app.QueueUpdateDraw(fn)
 }
 
 // StartBackgroundSync starts a background ticker with the given interval that triggers vault sync.
@@ -369,13 +404,16 @@ func (a *App) StartBackgroundSync(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	a.syncTicker = ticker
 	a.stopSync = make(chan struct{})
+	done := make(chan struct{})
+	a.syncLoopDone = done
 	a.mu.Unlock()
 
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case <-ticker.C:
-				a.TriggerSync()
+				<-a.TriggerSync()
 			case <-a.stopSync:
 				ticker.Stop()
 				return
@@ -384,15 +422,22 @@ func (a *App) StartBackgroundSync(interval time.Duration) {
 	}()
 }
 
-// StopBackgroundSync stops the background sync ticker if running.
+// StopBackgroundSync stops the background sync ticker if running and waits
+// until the ticker goroutine (and any sync it already started) has returned.
 func (a *App) StopBackgroundSync() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.syncStarted {
-		if a.stopSync != nil {
-			close(a.stopSync)
-		}
-		a.syncStarted = false
+	if !a.syncStarted {
+		a.mu.Unlock()
+		return
+	}
+	done := a.syncLoopDone
+	if a.stopSync != nil {
+		close(a.stopSync)
+	}
+	a.syncStarted = false
+	a.mu.Unlock()
+	if done != nil {
+		<-done
 	}
 }
 
