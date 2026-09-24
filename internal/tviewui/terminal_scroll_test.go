@@ -8,6 +8,8 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 )
 
 // testBackend delivers queued chunks to a tvxterm.View and records everything
@@ -424,4 +426,156 @@ func drawTerminal(t *testing.T, view *terminalView) {
 	}
 	defer screen.Fini()
 	view.Draw(screen)
+}
+
+// TestAppDragOffScreenEdgeAutoScrolls drives the drag through the real tview
+// event loop and layout. Dragging to the last row of the screen (the pointer
+// has left the terminal primitive) must still scroll the local scrollback.
+// Calling the terminal handler directly hides this: Pages and Flex drop mouse
+// events once the pointer leaves their rectangle, so the drag never arrives.
+func TestAppDragOffScreenEdgeAutoScrolls(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	app := New(hosts.NewList(nil), Deps{}, nil)
+	key := SessionKey("host-a", "file")
+	app.termPane.SetSessionForTest(key, "host-a", "file")
+	app.termPane.SetSessionViewForTest(key, view)
+	app.termPane.Activate(key)
+	app.ShowTerminalPaneForTest()
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("init simulation screen: %v", err)
+	}
+	screen.SetSize(80, 24)
+	app.SetScreenForTest(screen)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.Run() }()
+	defer func() {
+		app.StopForTest()
+		if err := <-errCh; err != nil {
+			t.Errorf("app.Run: %v", err)
+		}
+	}()
+	var clickY, dragY, iy, ih int
+	ready := make(chan struct{})
+	app.app.QueueUpdateDraw(func() {
+		view.ScrollbackUp(6)
+		_, iy, _, ih = view.GetInnerRect()
+		_, height := screen.Size()
+		clickY = iy + 1
+		dragY = height - 1
+		close(ready)
+	})
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first draw")
+	}
+	before, _ := view.ScrollbackStatus()
+	if before <= 0 {
+		t.Fatal("precondition: expected scrollback offset > 0")
+	}
+	if ih <= 0 {
+		t.Fatal("precondition: terminal has no inner rows after layout")
+	}
+
+	waitEvent := func(ev tcell.Event) {
+		t.Helper()
+		done := make(chan struct{})
+		app.app.QueueEvent(ev)
+		app.app.QueueUpdate(func() { close(done) })
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for a mouse event")
+		}
+	}
+
+	// Press inside the terminal, then drag onto the last row of the screen.
+	// That row belongs to the footer, outside the terminal primitive.
+	waitEvent(tcell.NewEventMouse(40, clickY, tcell.Button1, tcell.ModNone))
+	if !view.Dragging() {
+		x, y, w, h := view.GetRect()
+		t.Fatalf("precondition: mouse down at y=%d did not start a drag (rect %d,%d %dx%d)", clickY, x, y, w, h)
+	}
+	waitEvent(tcell.NewEventMouse(40, dragY, tcell.Button1, tcell.ModNone))
+
+	after, _ := view.ScrollbackStatus()
+	if after >= before {
+		t.Errorf("dragging onto the last screen row must scroll toward newer lines, offset %d -> %d", before, after)
+	}
+}
+
+// TestAppWheelDuringDragKeepsSelection drives a wheel event through the real
+// event loop while a selection drag is held. The highlight must survive and
+// the local scrollback must move.
+func TestAppWheelDuringDragKeepsSelection(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	app := New(hosts.NewList(nil), Deps{}, nil)
+	key := SessionKey("host-a", "file")
+	app.termPane.SetSessionForTest(key, "host-a", "file")
+	app.termPane.SetSessionViewForTest(key, view)
+	app.termPane.Activate(key)
+	app.ShowTerminalPaneForTest()
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("init simulation screen: %v", err)
+	}
+	screen.SetSize(80, 24)
+	app.SetScreenForTest(screen)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.Run() }()
+	defer func() {
+		app.StopForTest()
+		if err := <-errCh; err != nil {
+			t.Errorf("app.Run: %v", err)
+		}
+	}()
+
+	var clickY int
+	ready := make(chan struct{})
+	app.app.QueueUpdateDraw(func() {
+		_, y, _, _ := view.GetInnerRect()
+		clickY = y + 1
+		close(ready)
+	})
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first draw")
+	}
+
+	waitEvent := func(ev tcell.Event) {
+		t.Helper()
+		done := make(chan struct{})
+		app.app.QueueEvent(ev)
+		app.app.QueueUpdate(func() { close(done) })
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for a mouse event")
+		}
+	}
+
+	waitEvent(tcell.NewEventMouse(40, clickY, tcell.Button1, tcell.ModNone))
+	waitEvent(tcell.NewEventMouse(44, clickY+1, tcell.Button1, tcell.ModNone))
+	if !view.HasSelection() {
+		t.Fatal("precondition: expected a selection after the drag")
+	}
+
+	waitEvent(tcell.NewEventMouse(44, clickY+1, tcell.WheelUp, tcell.ModNone))
+	if !view.HasSelection() {
+		t.Fatal("wheel during a drag must not clear the selection")
+	}
+	offset, _ := view.ScrollbackStatus()
+	if offset <= 0 {
+		t.Errorf("wheel during a drag must scroll the local scrollback, offset=%d", offset)
+	}
 }
