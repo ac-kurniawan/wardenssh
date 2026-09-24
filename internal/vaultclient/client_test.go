@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestClientRefreshToken(t *testing.T) {
@@ -37,5 +38,18 @@ func TestClientRefreshToken(t *testing.T) {
 	}
 	if sess.RefreshToken != "new-ref-token" {
 		t.Errorf("got RefreshToken = %q, want new-ref-token", sess.RefreshToken)
+	}
+}
+
+func TestNewHTTPClientHasTimeout(t *testing.T) {
+	c := New("https://vault.example")
+	if c.HTTP == nil {
+		t.Fatal("HTTP client is nil")
+	}
+	if c.HTTP == http.DefaultClient {
+		t.Fatal("New uses http.DefaultClient, which has no timeout")
+	}
+	if c.HTTP.Timeout < 15*time.Second {
+		t.Fatalf("HTTP timeout = %s, want at least 15s", c.HTTP.Timeout)
 	}
 }

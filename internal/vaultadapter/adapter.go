@@ -8,6 +8,7 @@ package vaultadapter
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
@@ -15,12 +16,21 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/vaultcrypto"
 )
 
-// Source adapts a vaultclient.Session + sync ciphers into vault.Source.
 type Source struct {
-	name     string
-	session  *vaultclient.Session
-	ciphers  []vaultclient.Cipher
-	fields   config.CustomFields // configurable custom-field names
+	name    string
+	session *vaultclient.Session
+	fields  config.CustomFields // configurable custom-field names
+
+	// mu guards ciphers and items. TriggerSync runs Sync from its own
+	// goroutine while connect calls Items() from the UI goroutine — the
+	// cache must not race.
+	mu      sync.Mutex
+	ciphers []vaultclient.Cipher
+
+	// items caches the decrypted host list (names + custom fields). Connect
+	// looks items up through Items() on every connect; without this cache that
+	// re-decrypts the whole vault. Nil means stale. Cipher mutations clear it.
+	items []vault.Item
 }
 
 // NewSource builds a Source from an authenticated session + sync ciphers.
@@ -65,11 +75,42 @@ func (s *Source) DecryptField(wrappedKey, encrypted string) ([]byte, error) {
 
 // Items satisfies vault.Source: returns SSH-Key items with a populated 'host'
 // custom field (Q32/B) plus Login items tagged type==SSH. Item names + custom
-// fields are decrypted eagerly; the private key / login credentials stay
-// encrypted (lazy decrypt, Q8/C).
+// fields are decrypted on the first call and cached; later calls (connect-time
+// lookup) reuse that cache. The private key / login credentials stay encrypted
+// (lazy decrypt, Q8/C).
 func (s *Source) Items() ([]vault.Item, error) {
-	var out []vault.Item
-	for _, ci := range s.ciphers {
+	s.mu.Lock()
+	cached := s.items
+	ciphers := s.ciphers
+	s.mu.Unlock()
+	if cached != nil {
+		return copyItems(cached), nil
+	}
+
+	out := s.decryptItems(ciphers)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.items != nil {
+		// A concurrent Items() filled the cache first. Drop our copy so both
+		// callers observe the same snapshot.
+		return copyItems(s.items), nil
+	}
+	if s.ciphersChanged(ciphers) {
+		// Sync or a cipher mutation landed while we were decrypting. Rebuild
+		// against the ciphers we now hold so the cache matches them.
+		out = s.decryptItems(s.ciphers)
+	}
+	s.items = out
+	return copyItems(s.items), nil
+}
+
+// decryptItems builds the launchable host list from a cipher snapshot. It does
+// not touch Source state, so it runs without mu held — decryption is the slow
+// part and must not block Sync.
+func (s *Source) decryptItems(ciphers []vaultclient.Cipher) []vault.Item {
+	out := make([]vault.Item, 0, len(ciphers))
+	for _, ci := range ciphers {
 		// Resolve the key pair used to encrypt this item's fields: the account
 		// key for legacy items, the item's own wrapped key (ci.Key) for newer
 		// cipher-key-encrypted items.
@@ -79,7 +120,7 @@ func (s *Source) Items() ([]vault.Item, error) {
 		}
 
 		// Decrypt the item name (display label, Q30/A).
-		nameBytes, err := vaultcrypto.Decrypt(encKey, macKey, ci.Name)
+		nameBytes, err := decryptField(encKey, macKey, ci.Name)
 		if err != nil {
 			continue // skip items we can't decrypt
 		}
@@ -97,7 +138,7 @@ func (s *Source) Items() ([]vault.Item, error) {
 			// Login item tagged type=SSH -> password-credential host.
 			// Username is decrypted for display (User); the credentials stay
 			// encrypted for lazy decrypt at connect time (Q8/C pattern).
-			uname, _ := vaultcrypto.Decrypt(encKey, macKey, ci.Login.Username)
+			uname, _ := decryptField(encKey, macKey, ci.Login.Username)
 			item := vault.Item{
 				ID:          ci.ID,
 				Name:        string(nameBytes),
@@ -132,7 +173,21 @@ func (s *Source) Items() ([]vault.Item, error) {
 			out = append(out, item)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// ciphersChanged reports whether the cipher slice was replaced since the
+// snapshot was taken. Caller must hold s.mu.
+func (s *Source) ciphersChanged(snapshot []vaultclient.Cipher) bool {
+	return len(s.ciphers) != len(snapshot) || (len(snapshot) > 0 && &s.ciphers[0] != &snapshot[0])
+}
+
+// copyItems returns a shallow copy so a later Sync cannot mutate the slice a
+// caller is still reading.
+func copyItems(in []vault.Item) []vault.Item {
+	out := make([]vault.Item, len(in))
+	copy(out, in)
+	return out
 }
 
 // DecryptLogin satisfies vault.Source: lazily decrypts the item's native
@@ -179,7 +234,10 @@ func (s *Source) Sync(c *vaultclient.Client) error {
 	if err != nil {
 		return fmt.Errorf("vaultadapter: sync %s: %w", s.name, err)
 	}
+	s.mu.Lock()
 	s.ciphers = sr.Ciphers
+	s.invalidateItems()
+	s.mu.Unlock()
 	return nil
 }
 
@@ -192,6 +250,42 @@ type customFieldValues struct {
 	Type      string
 }
 
+// decryptCounter, when non-nil, is invoked once per field decrypt. Tests use
+// it to prove Items() does not re-decrypt a cached vault. Production leaves it nil.
+// decryptCounterMu guards the hook itself: go test -race runs packages' tests
+// in parallel, so an unsynchronized package var races between tests.
+var (
+	decryptCounterMu sync.Mutex
+	decryptCounter   func()
+)
+
+// SetDecryptCounter installs a test hook called on every field decrypt used
+// to build the host list. The returned function restores the previous hook.
+func SetDecryptCounter(fn func()) func() {
+	decryptCounterMu.Lock()
+	prev := decryptCounter
+	decryptCounter = fn
+	decryptCounterMu.Unlock()
+	return func() {
+		decryptCounterMu.Lock()
+		decryptCounter = prev
+		decryptCounterMu.Unlock()
+	}
+}
+
+func decryptField(encKey, macKey []byte, enc string) ([]byte, error) {
+	decryptCounterMu.Lock()
+	hook := decryptCounter
+	decryptCounterMu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return vaultcrypto.Decrypt(encKey, macKey, enc)
+}
+
+// invalidateItems drops the decrypted host-list cache. Caller must hold s.mu.
+func (s *Source) invalidateItems() { s.items = nil }
+
 // readCustomFields decrypts the cipher's custom fields and maps them to
 // connection directives by name (configurable via config.CustomFields).
 func readCustomFields(encKey, macKey []byte, fields []vaultclient.CustomField, cf config.CustomFields) customFieldValues {
@@ -202,11 +296,11 @@ func readCustomFields(encKey, macKey []byte, fields []vaultclient.CustomField, c
 		if f.Value == "" {
 			continue
 		}
-		nameBytes, err := vaultcrypto.Decrypt(encKey, macKey, f.Name)
+		nameBytes, err := decryptField(encKey, macKey, f.Name)
 		if err != nil {
 			continue
 		}
-		valBytes, err := vaultcrypto.Decrypt(encKey, macKey, f.Value)
+		valBytes, err := decryptField(encKey, macKey, f.Value)
 		if err != nil {
 			continue
 		}
@@ -274,22 +368,31 @@ func (s *Source) Fields() config.CustomFields { return s.fields }
 
 // AddCipher appends a newly created cipher to the source's cached ciphers.
 func (s *Source) AddCipher(c vaultclient.Cipher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ciphers = append(s.ciphers, c)
+	s.invalidateItems()
 }
 
 // UpdateCipher replaces the cached cipher with matching ID, or appends if not found.
 func (s *Source) UpdateCipher(c vaultclient.Cipher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i, existing := range s.ciphers {
 		if existing.ID == c.ID {
 			s.ciphers[i] = c
+			s.invalidateItems()
 			return
 		}
 	}
 	s.ciphers = append(s.ciphers, c)
+	s.invalidateItems()
 }
 
 // CipherByID returns the cached raw cipher matching the given ID.
 func (s *Source) CipherByID(id string) (vaultclient.Cipher, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, c := range s.ciphers {
 		if c.ID == id {
 			return c, true
@@ -303,9 +406,12 @@ func (s *Source) CipherByID(id string) (vaultclient.Cipher, bool) {
 // from the local cache (e.g. when a later sync fails and the cache is kept).
 // Removing an unknown id is a no-op.
 func (s *Source) RemoveCipher(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i, c := range s.ciphers {
 		if c.ID == id {
 			s.ciphers = append(s.ciphers[:i], s.ciphers[i+1:]...)
+			s.invalidateItems()
 			return
 		}
 	}
