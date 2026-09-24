@@ -319,3 +319,109 @@ func TestTerminalClickWithoutDragClearsSelection(t *testing.T) {
 		t.Error("expected a plain click to clear the selection")
 	}
 }
+
+// TestTerminalDragPastEdgeAutoScrolls: dragging a selection off the bottom of
+// the terminal (pointer held, no wheel) must scroll the local scrollback so
+// more text can be selected. The drag must not be forwarded to the remote.
+func TestTerminalDragPastEdgeAutoScrolls(t *testing.T) {
+	view, backend := fedView(t)
+	defer view.Close()
+	drawTerminal(t, view)
+
+	handler := view.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+
+	// Leave the live row so a downward drag has somewhere to scroll.
+	view.ScrollbackUp(6)
+	beforeDown, _ := view.ScrollbackStatus()
+	if beforeDown <= 0 {
+		t.Fatal("precondition: expected scrollback offset > 0")
+	}
+
+	if consumed, _ := handler(tview.MouseLeftDown, tcell.NewEventMouse(1, 2, tcell.Button1, tcell.ModNone), setFocus); !consumed {
+		t.Fatal("expected left-down to be consumed")
+	}
+	// Inner area is y=1..3 (rect 0,0 12x5 with a border). y=6 is past the
+	// bottom edge while the button is still held.
+	if consumed, _ := handler(tview.MouseMove, tcell.NewEventMouse(1, 6, tcell.Button1, tcell.ModNone), setFocus); !consumed {
+		t.Fatal("expected drag past the bottom edge to be consumed")
+	}
+	afterDown, _ := view.ScrollbackStatus()
+	if afterDown >= beforeDown {
+		t.Errorf("expected drag past the bottom to scroll toward newer lines, offset %d -> %d", beforeDown, afterDown)
+	}
+	// Keep dragging past the bottom until the live row is back.
+	before, _ := view.ScrollbackStatus()
+	for i := 0; i < 10 && before != 0; i++ {
+		handler(tview.MouseMove, tcell.NewEventMouse(1, 6, tcell.Button1, tcell.ModNone), setFocus)
+		before, _ = view.ScrollbackStatus()
+	}
+	if before != 0 {
+		t.Fatalf("precondition: expected drag-down to reach the bottom, offset=%d", before)
+	}
+	handler(tview.MouseLeftUp, tcell.NewEventMouse(1, 6, 0, tcell.ModNone), setFocus)
+	handler(tview.MouseLeftDown, tcell.NewEventMouse(1, 2, tcell.Button1, tcell.ModNone), setFocus)
+	// y=0 is above the inner area (border row).
+	if consumed, _ := handler(tview.MouseMove, tcell.NewEventMouse(1, 0, tcell.Button1, tcell.ModNone), setFocus); !consumed {
+		t.Fatal("expected drag past the top edge to be consumed")
+	}
+	after, _ := view.ScrollbackStatus()
+	if after <= before {
+		t.Errorf("expected drag past the top to scroll toward older lines, offset %d -> %d", before, after)
+	}
+	if writes := backend.Writes(); len(writes) != 0 {
+		t.Errorf("edge drag must not be forwarded to the remote; got %d writes: %q", len(writes), writes)
+	}
+}
+
+// TestTerminalWheelDuringDragKeepsSelection: scrolling the wheel while a
+// selection drag is held must move the local scrollback and keep (extend) the
+// highlight. It must not reset the selection.
+func TestTerminalWheelDuringDragKeepsSelection(t *testing.T) {
+	view, backend := fedView(t)
+	defer view.Close()
+	drawTerminal(t, view)
+
+	handler := view.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+
+	handler(tview.MouseLeftDown, tcell.NewEventMouse(1, 1, tcell.Button1, tcell.ModNone), setFocus)
+	handler(tview.MouseMove, tcell.NewEventMouse(5, 2, tcell.Button1, tcell.ModNone), setFocus)
+	if !view.HasSelection() {
+		t.Fatal("precondition: expected a selection after drag")
+	}
+	before := view.SelectedText()
+
+	consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 2, tcell.Button1, tcell.ModNone), setFocus)
+	if !consumed {
+		t.Fatal("expected wheel-up during drag to be consumed")
+	}
+	offset, _ := view.ScrollbackStatus()
+	if offset <= 0 {
+		t.Errorf("expected wheel-up during drag to scroll local scrollback, offset=%d", offset)
+	}
+	if !view.HasSelection() {
+		t.Fatal("wheel during drag must not clear the selection")
+	}
+	if got := view.SelectedText(); got == "" {
+		t.Error("expected selected text to survive the wheel scroll")
+	} else if got == before {
+		t.Errorf("expected the selection to extend into the newly revealed lines, still %q", got)
+	}
+
+	if writes := backend.Writes(); len(writes) != 0 {
+		t.Errorf("wheel during drag must not be forwarded to the remote; got %d writes: %q", len(writes), writes)
+	}
+}
+
+// drawTerminal sizes the emulator to the view's inner rect. Attach alone leaves
+// the default 80x24 grid; Draw is what applies SetRect.
+func drawTerminal(t *testing.T, view *terminalView) {
+	t.Helper()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("init simulation screen: %v", err)
+	}
+	defer screen.Fini()
+	view.Draw(screen)
+}
