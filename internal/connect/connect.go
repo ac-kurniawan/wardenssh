@@ -1,7 +1,7 @@
-// Package connect wires the launcher's ConnectMsg into the full connect flow:
-// lazy-decrypt the vault key (Q8/C), load it into the in-process agent
-// (Q19/B ref-counted), and spawn ssh via the session manager with
-// SSH_AUTH_SOCK pointed at our agent pipe (Q4/B).
+// Package connect builds the ssh command for a host entry: lazy-decrypt the
+// vault key (Q8/C), load it into the in-process agent (Q19/B ref-counted),
+// and return argv+env with SSH_AUTH_SOCK pointed at our agent pipe (Q4/B).
+// The TUI terminal pane owns the PTY and is the only session spawner.
 package connect
 
 import (
@@ -14,7 +14,6 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
-	"github.com/ac-kurniawan/wardenssh/internal/session"
 	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 )
@@ -50,80 +49,6 @@ var askpassExecutable = func() string {
 	return "wardenssh"
 }
 
-// Connector performs the full connect flow for a host entry.
-type Connector struct {
-	Agent *sshagent.Keyring
-	Mgr   *session.Manager
-}
-
-// Result is the outcome of a connect attempt.
-type Result struct {
-	Session *session.Session
-	Err     error
-}
-
-// Connect performs the full flow:
-// 1. Resolve the vault source + decrypt the private key (lazy, Q8/C).
-// 2. Parse the key + load into the agent (ref-counted by session ID, Q19/B).
-// 3. Build the ssh argv (host, user, port, ProxyJump, SSH_AUTH_SOCK).
-// 4. Spawn ssh via the session manager.
-// The vaultSources map is keyed by the entry's Source label.
-func Connect(entry hosts.Entry, sessionID string, vc vault.Client, c *Connector) Result {
-	if c == nil || c.Mgr == nil || c.Agent == nil {
-		return Result{Err: fmt.Errorf("connect: connector not initialized")}
-	}
-
-	fmt.Fprintf(os.Stderr, "wardenssh: connecting to %q (source=%s)\n", entry.Alias, entry.Source)
-
-	// 1. For file-sourced entries, ssh reads the key from disk directly
-	//    (Q6/A read-only ~/.ssh). No agent involvement needed for file keys —
-	//    ssh.exe reads IdentityFile from ~/.ssh/config. For vault-sourced
-	//    entries, lazy-decrypt the key + load into the agent.
-	if entry.Source != "file" {
-		if vc == nil {
-			return Result{Err: fmt.Errorf("connect: vault entry %q but no vault client", entry.Alias)}
-		}
-		// Find the source + item matching this entry.
-		item, src, err := findVaultItem(vc, entry)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "wardenssh: find vault item: %v\n", err)
-			return Result{Err: fmt.Errorf("connect: find vault item: %w", err)}
-		}
-
-		// Lazy-decrypt the private key (Q8/C).
-		decrypted, err := src.DecryptPrivateKey(item, "")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "wardenssh: decrypt private key: %v\n", err)
-			return Result{Err: fmt.Errorf("connect: decrypt private key: %w", err)}
-		}
-		fmt.Fprintf(os.Stderr, "wardenssh: decrypted key (%d bytes)\n", len(decrypted))
-
-		// Parse + load into the agent.
-		priv, err := ssh.ParseRawPrivateKey(decrypted)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "wardenssh: parse private key: %v\n", err)
-			return Result{Err: fmt.Errorf("connect: parse private key: %w", err)}
-		}
-		if _, err := c.Agent.Load(priv, entry.Alias, sessionID); err != nil {
-			fmt.Fprintf(os.Stderr, "wardenssh: agent load: %v\n", err)
-			return Result{Err: fmt.Errorf("connect: agent load: %w", err)}
-		}
-		fmt.Fprintf(os.Stderr, "wardenssh: key loaded into agent\n")
-	}
-
-	// 3. Build ssh argv.
-	argv := SSHArgv(entry, AgentPipePath())
-	fmt.Fprintf(os.Stderr, "wardenssh: spawning ssh: %v\n", argv)
-
-	// 4. Spawn ssh via the session manager with SSH_AUTH_SOCK.
-	env := EnvForAgent(AgentPipePath())
-	sess, err := c.Mgr.SpawnWithEnv(entry.Alias, entry.Source, argv, env)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "wardenssh: spawn: %v\n", err)
-	}
-	return Result{Session: sess, Err: err}
-}
-
 // PrepareAgentKey decrypts the private key for a vault-sourced entry and loads it
 // into the agent keyring for sessionID. No-op for file-sourced entries.
 func PrepareAgentKey(entry hosts.Entry, sessionID string, vc vault.Client, agent *sshagent.Keyring) error {
@@ -152,7 +77,7 @@ func PrepareAgentKey(entry hosts.Entry, sessionID string, vc vault.Client, agent
 }
 
 // SSHArgv builds the ssh command-line arguments for a host entry. The agent
-// pipe is passed via SSH_AUTH_SOCK (set as env by the session manager caller).
+// pipe is passed via SSH_AUTH_SOCK (set as env by the terminal pane).
 // For vault-sourced entries, NO -i is passed (ssh uses the agent). For
 // file-sourced entries with an IdentityFile, it's read from ~/.ssh/config by
 // ssh directly.

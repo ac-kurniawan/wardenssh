@@ -1,7 +1,10 @@
 package tviewui_test
 
 import (
+	"os/exec"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
@@ -140,6 +143,58 @@ func TestAppKillAllQuitClosesTerminalSessions(t *testing.T) {
 	}
 	if liveCountOf(app) != 0 {
 		t.Error("expected all green dots cleared after kill-all")
+	}
+}
+
+// TestAppKillAllQuitTerminatesRunningPty: kill-all closes every running
+// terminal PTY and clears live flags. The pane owns the sessions; there is
+// no separate session manager on this path.
+func TestAppKillAllQuitTerminatesRunningPty(t *testing.T) {
+	hl := sampleHostList()
+	app := tviewui.New(hl, tviewui.Deps{}, nil)
+	cmd := exec.Command("sleep", "30")
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/c", "ping -n 30 127.0.0.1 >nul")
+	}
+	exited := make(chan struct{})
+	if err := app.TerminalPane().StartSSHFromCmd(prodEntry(), cmd, nil, func(error) {
+		close(exited)
+	}); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	hl.MarkLive(prodEntry().Alias, prodEntry().Source)
+	web := webEntry()
+	webCmd := exec.Command("sleep", "30")
+	if runtime.GOOS == "windows" {
+		webCmd = exec.Command("cmd", "/c", "ping -n 30 127.0.0.1 >nul")
+	}
+	webExited := make(chan struct{})
+	if err := app.TerminalPane().StartSSHFromCmd(web, webCmd, nil, func(error) {
+		close(webExited)
+	}); err != nil {
+		t.Fatalf("start second session: %v", err)
+	}
+	hl.MarkLive(web.Alias, web.Source)
+
+	app.RequestQuit()
+	app.KillAllQuit()
+
+	if app.InQuitModal() {
+		t.Error("expected quit modal dismissed after kill-all")
+	}
+	if n := app.TerminalPane().SessionCount(); n != 0 {
+		t.Errorf("SessionCount = %d, want 0", n)
+	}
+	if liveCountOf(app) != 0 {
+		t.Error("expected all green dots cleared after kill-all")
+	}
+	deadline := time.After(3 * time.Second)
+	for _, ch := range []<-chan struct{}{exited, webExited} {
+		select {
+		case <-ch:
+		case <-deadline:
+			t.Fatal("kill-all did not close every running terminal session within 3s")
+		}
 	}
 }
 

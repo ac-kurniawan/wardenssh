@@ -15,7 +15,6 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/connect"
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
-	"github.com/ac-kurniawan/wardenssh/internal/session"
 	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
 	"github.com/ac-kurniawan/wardenssh/internal/sshconfig"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
@@ -26,7 +25,6 @@ import (
 // Deps holds injected dependencies for the TUI app.
 type Deps struct {
 	Agent        *sshagent.Keyring
-	Mgr          *session.Manager
 	VaultCli     vault.Client
 	AgentPipe    string
 	CustomFields config.CustomFields
@@ -40,16 +38,16 @@ type App struct {
 	deps     Deps
 	vaults   []config.Vault
 
-	hostPane    *HostListPane
-	termPane    *TerminalPane
-	setupModal  *SetupModal
-	quitModal   *QuitModal
-	discModal   *DisconnectModal
-	createModal *CreateModal
-	editModal   *CreateModal
-	deleteModal *DeleteModal
-	scopeModal  *ScopeModal
-	helpModal   *HelpModal
+	hostPane      *HostListPane
+	termPane      *TerminalPane
+	setupModal    *SetupModal
+	quitModal     *QuitModal
+	discModal     *DisconnectModal
+	createModal   *CreateModal
+	editModal     *CreateModal
+	deleteModal   *DeleteModal
+	scopeModal    *ScopeModal
+	helpModal     *HelpModal
 	footer        *Footer
 	topBar        *TopBar
 	tabBar        *SessionTabBar
@@ -460,15 +458,12 @@ func (a *App) CancelQuit() {
 	a.app.SetFocus(a.hostPane.Primitive())
 }
 
-// KillAllQuit kills all sessions, clears live flags, and quits (modal 'k').
-// Exported for tests and programmatic triggering.
+// KillAllQuit closes every terminal pane session, clears live flags, and quits
+// (modal 'k'). The pane is the only session owner. Exported for tests.
 func (a *App) KillAllQuit() {
 	a.inQuit = false
 	a.overlay.RemovePage("quit")
 	a.termPane.Close()
-	if a.deps.Mgr != nil {
-		a.deps.Mgr.KillAll()
-	}
 	a.clearAllLive()
 	a.app.Stop()
 }

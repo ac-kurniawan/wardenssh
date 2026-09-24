@@ -18,7 +18,6 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/app"
 	"github.com/ac-kurniawan/wardenssh/internal/config"
 	"github.com/ac-kurniawan/wardenssh/internal/connect"
-	"github.com/ac-kurniawan/wardenssh/internal/session"
 	"github.com/ac-kurniawan/wardenssh/internal/sshagent"
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
@@ -107,18 +106,14 @@ func run(noKeyring bool) error {
 	defer l.Close()
 	go sshagent.Serve(l, kr)
 
-	// 2. Initialize session manager.
-	mgr := session.NewManager()
-
 	deps := tviewui.Deps{
 		Agent:        kr,
-		Mgr:          mgr,
 		AgentPipe:    pipePath,
 		CustomFields: cfg.CustomFields,
 		NoKeyring:    noKeyring,
 	}
 
-	// 3. Build the initial host list (file-source only; vault hosts are
+	// 2. Build the initial host list (file-source only; vault hosts are
 	//    merged in after the setup modal completes).
 	hostList, err := app.BuildHostList(sshConfigReader, nil)
 	if err != nil {
@@ -129,13 +124,13 @@ func run(noKeyring bool) error {
 		deps.VaultCli = vault.NewFakeClient()
 	}
 
-	// 4. Launch the TUI.
+	// 3. Launch the TUI.
 	uiApp := tviewui.New(hostList, deps, cfg.Vaults)
 	if err := uiApp.Run(); err != nil {
 		return fmt.Errorf("run tui: %w", err)
 	}
 
-	// 5. Best-effort memory wipe on exit (keys, passwords in RAM).
+	// 4. Best-effort memory wipe on exit (keys, passwords in RAM).
 	kr.Wipe()
 
 	return nil
