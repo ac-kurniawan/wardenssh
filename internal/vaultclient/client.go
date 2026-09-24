@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ac-kurniawan/wardenssh/internal/vaultcrypto"
 )
@@ -29,6 +30,10 @@ const (
 	KdfArgon2 = 1
 )
 
+// httpTimeout bounds every vault request (login, sync, cipher CRUD) so a
+// stalled server cannot block the TUI forever. http.DefaultClient has no timeout.
+const httpTimeout = 15 * time.Second
+
 // Client is an unauthenticated client for prelogin/register; Login returns an
 // AuthenticatedClient for sync/item operations.
 type Client struct {
@@ -38,7 +43,7 @@ type Client struct {
 
 // New returns a Client for the given server base URL.
 func New(baseURL string) *Client {
-	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: http.DefaultClient}
+	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: httpTimeout}}
 }
 
 // PreloginResult is the server's KDF parameters for an email.

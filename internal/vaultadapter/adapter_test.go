@@ -2,8 +2,11 @@ package vaultadapter_test
 
 import (
 	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
@@ -42,8 +45,8 @@ func TestSourceItemsDecryptsFieldsAndFiltersByHost(t *testing.T) {
 
 	ciphers := []vaultclient.Cipher{
 		{
-			ID:   "1",
-			Name: enc(t, sess, "prod-db-01"),
+			ID:     "1",
+			Name:   enc(t, sess, "prod-db-01"),
 			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-1")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.5"), Type: 0},
@@ -51,8 +54,8 @@ func TestSourceItemsDecryptsFieldsAndFiltersByHost(t *testing.T) {
 			},
 		},
 		{
-			ID:   "2",
-			Name: enc(t, sess, "no-host-item"),
+			ID:     "2",
+			Name:   enc(t, sess, "no-host-item"),
 			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-2")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: "", Type: 0}, // empty host -> excluded
@@ -114,9 +117,9 @@ func TestSourceItemsDecryptsCipherKeyWrappedItem(t *testing.T) {
 
 	ciphers := []vaultclient.Cipher{
 		{
-			ID:   "ck-1",
-			Name: encWith("new-host"),
-			Key:  wrappedKey,
+			ID:     "ck-1",
+			Name:   encWith("new-host"),
+			Key:    wrappedKey,
 			SshKey: &vaultclient.SshKey{PrivateKey: encWith("ITEM-PRIVATE-KEY")},
 			Fields: []vaultclient.CustomField{
 				{Name: encWith("host"), Value: encWith("192.168.50.7"), Type: 0},
@@ -160,8 +163,8 @@ func TestSourceDecryptPrivateKey(t *testing.T) {
 
 	ciphers := []vaultclient.Cipher{
 		{
-			ID:   "1",
-			Name: enc(t, sess, "test-host"),
+			ID:     "1",
+			Name:   enc(t, sess, "test-host"),
 			SshKey: &vaultclient.SshKey{PrivateKey: encPriv},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "1.2.3.4"), Type: 0},
@@ -189,16 +192,16 @@ func TestSourceRemoveCipherPurgesCache(t *testing.T) {
 
 	ciphers := []vaultclient.Cipher{
 		{
-			ID:   "1",
-			Name: enc(t, sess, "keep-me"),
+			ID:     "1",
+			Name:   enc(t, sess, "keep-me"),
 			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-1")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.1"), Type: 0},
 			},
 		},
 		{
-			ID:   "2",
-			Name: enc(t, sess, "delete-me"),
+			ID:     "2",
+			Name:   enc(t, sess, "delete-me"),
 			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-2")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.2"), Type: 0},
@@ -257,8 +260,8 @@ func TestSourceSyncUpdatesCiphers(t *testing.T) {
 
 	ciphers1 := []vaultclient.Cipher{
 		{
-			ID:   "1",
-			Name: enc(t, sess, "host-1"),
+			ID:     "1",
+			Name:   enc(t, sess, "host-1"),
 			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-1")},
 			Fields: []vaultclient.CustomField{
 				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.1"), Type: 0},
@@ -504,3 +507,163 @@ func TestSourceUpdateCipherAndCipherByID(t *testing.T) {
 	}
 }
 
+// TestSourceItemsCachesDecryptedNamesAndFields: connect-time lookup calls
+// Items() once per connect. The first call decrypts names + custom fields;
+// later calls must reuse that cache so a second connect does not decrypt
+// the vault again. Mutations that change the cipher set invalidate the cache.
+func TestSourceItemsCachesDecryptedNamesAndFields(t *testing.T) {
+	sess := fakeSession(t)
+	cf := config.Default().CustomFields
+
+	var calls atomic.Int64
+	restore := vaultadapter.SetDecryptCounter(func() { calls.Add(1) })
+	t.Cleanup(restore)
+
+	ciphers := []vaultclient.Cipher{
+		{
+			ID:     "1",
+			Name:   enc(t, sess, "prod-db-01"),
+			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-1")},
+			Fields: []vaultclient.CustomField{
+				{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.5"), Type: 0},
+				{Name: enc(t, sess, "user"), Value: enc(t, sess, "admin"), Type: 0},
+			},
+		},
+		{
+			ID:     "2",
+			Name:   enc(t, sess, "no-host-item"),
+			SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "PRIVATE-KEY-BYTES-2")},
+		},
+	}
+	src := vaultadapter.NewSource("vw:personal", sess, ciphers, cf)
+
+	first, err := src.Items()
+	if err != nil {
+		t.Fatalf("first Items: %v", err)
+	}
+	afterFirst := calls.Load()
+	if afterFirst == 0 {
+		t.Fatal("first Items decrypted nothing")
+	}
+	if len(first) != 1 || first[0].Name != "prod-db-01" || first[0].HostName != "10.0.0.5" || first[0].User != "admin" {
+		t.Fatalf("first items = %+v", first)
+	}
+
+	second, err := src.Items()
+	if err != nil {
+		t.Fatalf("second Items: %v", err)
+	}
+	if calls.Load() != afterFirst {
+		t.Fatalf("second Items decrypted again: calls %d -> %d", afterFirst, calls.Load())
+	}
+	if len(second) != 1 || second[0].Name != first[0].Name || second[0].HostName != first[0].HostName || second[0].User != first[0].User || second[0].EncPrivateKey != first[0].EncPrivateKey {
+		t.Fatalf("cached items differ: first=%+v second=%+v", first, second)
+	}
+
+	src.AddCipher(vaultclient.Cipher{
+		ID:     "3",
+		Name:   enc(t, sess, "added"),
+		SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-3")},
+		Fields: []vaultclient.CustomField{
+			{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.9"), Type: 0},
+		},
+	})
+	afterAdd, err := src.Items()
+	if err != nil {
+		t.Fatalf("Items after AddCipher: %v", err)
+	}
+	if len(afterAdd) != 2 {
+		t.Fatalf("after AddCipher: got %d items, want 2", len(afterAdd))
+	}
+	if calls.Load() == afterFirst {
+		t.Fatal("AddCipher did not invalidate the decrypt cache")
+	}
+}
+
+// TestSourceItemsConcurrentWithSync: connect calls Items() while TriggerSync
+// calls Sync() from another goroutine. The cache must stay race-free and every
+// Items() result must be a complete snapshot — either the pre-sync host or the
+// post-sync host, never a torn read.
+func TestSourceItemsConcurrentWithSync(t *testing.T) {
+	sess := fakeSession(t)
+	sess.AccessToken = "test-token"
+	cf := config.Default().CustomFields
+
+	before := vaultclient.Cipher{
+		ID:     "1",
+		Name:   enc(t, sess, "host-before"),
+		SshKey: &vaultclient.SshKey{PrivateKey: enc(t, sess, "KEY-BEFORE")},
+		Fields: []vaultclient.CustomField{
+			{Name: enc(t, sess, "host"), Value: enc(t, sess, "10.0.0.1"), Type: 0},
+		},
+	}
+	src := vaultadapter.NewSource("vw:personal", sess, []vaultclient.Cipher{before}, cf)
+
+	if _, err := src.Items(); err != nil {
+		t.Fatalf("warm cache: %v", err)
+	}
+
+	afterJSON := `{"data":[{
+		"id": "1",
+		"name": "` + enc(t, sess, "host-after") + `",
+		"type": 5,
+		"sshKey": {"privateKey": "` + enc(t, sess, "KEY-AFTER") + `"},
+		"fields": [{"name": "` + enc(t, sess, "host") + `", "value": "` + enc(t, sess, "10.0.0.2") + `", "type": 0}]
+	}]}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/ciphers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(afterJSON))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	vc := vaultclient.New(srv.URL)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 50 {
+			items, err := src.Items()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			for _, it := range items {
+				switch it.Name {
+				case "host-before", "host-after":
+				default:
+					errCh <- fmt.Errorf("torn item name %q", it.Name)
+					return
+				}
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range 50 {
+			if i%2 == 0 {
+				if err := src.Sync(vc); err != nil {
+					errCh <- err
+					return
+				}
+				continue
+			}
+			src.UpdateCipher(before)
+		}
+	}()
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+
+	final, err := src.Items()
+	if err != nil {
+		t.Fatalf("final Items: %v", err)
+	}
+	if len(final) != 1 {
+		t.Fatalf("final items = %d, want 1", len(final))
+	}
+}
