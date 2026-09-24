@@ -29,17 +29,17 @@ func SessionKey(alias, source string) string {
 
 // terminalSession is one running ssh session with its own terminal view + PTY.
 type terminalSession struct {
-	key       string
-	alias     string
-	source    string
-	host      string
-	port      string
-	started   time.Time
-	viewTitle string
-	view      tview.Primitive
-	backend   *PtyBackend
-	pingSlot  string // "[ 42 ms]" / "[ ·· ms]" / "[--- ms]"
-	pingColor string
+	key        string
+	alias      string
+	source     string
+	host       string
+	port       string
+	started    time.Time
+	viewTitle  string
+	view       tview.Primitive
+	backend    *PtyBackend
+	pingSlot   string // "[ 42 ms]" / "[ ·· ms]" / "[--- ms]"
+	pingColor  string
 	pingTarget string
 }
 
@@ -106,7 +106,64 @@ func emptyTerminalText() string {
 func EmptyStatusText() string { return emptyTerminalText() }
 
 // Primitive returns the tview primitive for layout embedding.
-func (p *TerminalPane) Primitive() tview.Primitive { return p.flex }
+func (p *TerminalPane) Primitive() tview.Primitive { return p }
+
+// activeView returns the terminal view currently on screen, or nil when the
+// status page is showing or the view is not a terminal.
+func (p *TerminalPane) activeView() *terminalView {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.sessions[p.active]
+	if s == nil {
+		return nil
+	}
+	view, _ := s.view.(*terminalView)
+	return view
+}
+
+// MouseHandler returns the terminal view as the mouse capture for the whole
+// selection drag. tview routes every later event to that primitive, so a drag
+// that leaves the pane, and a wheel tick while the button is held, both still
+// reach the view. The Flex and Pages underneath drop those events.
+func (p *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+		if view := p.activeView(); view != nil && view.Dragging() {
+			consumed, _ := view.MouseHandler()(action, event, setFocus)
+			if view.Dragging() {
+				return true, view
+			}
+			return consumed, nil
+		}
+		consumed, capture := p.flex.MouseHandler()(action, event, setFocus)
+		if view := p.activeView(); view != nil && view.Dragging() {
+			return true, view
+		}
+		return consumed, capture
+	}
+}
+
+func (p *TerminalPane) Draw(screen tcell.Screen) { p.flex.Draw(screen) }
+
+func (p *TerminalPane) SetRect(x, y, width, height int) { p.flex.SetRect(x, y, width, height) }
+
+func (p *TerminalPane) GetRect() (int, int, int, int) { return p.flex.GetRect() }
+
+func (p *TerminalPane) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return p.flex.InputHandler()
+}
+
+func (p *TerminalPane) Focus(delegate func(p tview.Primitive)) { p.flex.Focus(delegate) }
+
+func (p *TerminalPane) HasFocus() bool { return p.flex.HasFocus() }
+
+func (p *TerminalPane) Blur() { p.flex.Blur() }
+
+func (p *TerminalPane) PasteHandler() func(text string, setFocus func(p tview.Primitive)) {
+	return p.flex.PasteHandler()
+}
 
 // SetFocused updates the border color of the currently displayed surface (the
 // active session view, or the status page when idle) to reflect keyboard
@@ -569,6 +626,8 @@ func (p *TerminalPane) SetSessionViewForTest(key string, view tview.Primitive) {
 		s.view = view
 	}
 	p.mu.Unlock()
+	p.pages.AddPage(pageName(key), view, true, true)
+	p.pages.SwitchToPage(pageName(key))
 }
 
 // CopyActiveSelection copies the displayed session's text selection to the

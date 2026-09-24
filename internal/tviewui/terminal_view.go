@@ -25,6 +25,14 @@ type terminalView struct {
 	lastDragX, lastDragY int
 }
 
+// Dragging reports whether a primary-button text selection is in progress.
+func (s *terminalView) Dragging() bool {
+	if s == nil {
+		return false
+	}
+	return s.dragging
+}
+
 // newTerminalView builds a WardenSSH-wired tvxterm.View. The app reference is
 // used for focus handling; it may be nil for tests.
 func newTerminalView(app *tview.Application, title string) *terminalView {
@@ -61,9 +69,17 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 					s.dragSelect(event.Position())
 					return true, s
 				}
-				// Button released without a MouseLeftUp (rare); stop dragging.
-				s.dragging = false
+				// A wheel tick also arrives as a move, and that move carries
+				// no button. Keep the capture so the wheel action that tview
+				// fires next on the same event still reaches this view.
+				return true, s
 			case tview.MouseLeftUp:
+				// tcell reports a wheel tick during a held button as a
+				// mouse-up whose mask is the wheel. The real scroll action
+				// follows on the same tick, so this one must not end the drag.
+				if event.Buttons()&(tcell.WheelUp|tcell.WheelDown) != 0 {
+					return true, s
+				}
 				s.dragging = false
 				s.finishSelection()
 				return true, nil
@@ -74,10 +90,25 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 				s.scrollSelection(setFocus, 1)
 				return true, s
 			}
-			return orig(action, event, setFocus)
+			// Anything not handled above is ignored while the button is held.
+			// Delegating to the embedded handler is what turns the wheel into a
+			// mouse-up and ends the drag.
+			return true, s
 		}
 
 		x, y := event.Position()
+		// A press is delivered as a move first, then the down, on the same
+		// event. The move's answer is what tview keeps as the capture, so a
+		// move that still holds the button must name this view or the down
+		// that follows is the last event the view ever sees.
+		if action == tview.MouseMove && event.Buttons()&tcell.Button1 != 0 && s.InRect(x, y) {
+			if !s.onScrollbarColumn(x, y) {
+				s.dragging = true
+				s.lastDragX, s.lastDragY = x, y
+				s.StartSelection(x, y)
+			}
+			return true, s
+		}
 		if !s.InRect(x, y) {
 			return orig(action, event, setFocus)
 		}
