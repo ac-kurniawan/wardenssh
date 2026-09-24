@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -194,6 +195,140 @@ func TestAppTriggerSyncOfflineStatusOnSyncError(t *testing.T) {
 	title := app.HostPane().Title()
 	if !strings.Contains(title, "Sync failed (offline)") {
 		t.Errorf("expected title to contain 'Sync failed (offline)', got: %s", title)
+	}
+}
+
+// blockingVaultClient holds Sync until release is closed. Calls counts every
+// entry, including ones that return immediately because a sync is already
+// in flight.
+type blockingVaultClient struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (b *blockingVaultClient) Sources() []vault.Source { return nil }
+
+func (b *blockingVaultClient) Sync() error {
+	b.calls.Add(1)
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return nil
+}
+
+// TestAppTriggerSyncDrawsOnEventLoop: the background sync goroutine must not
+// touch tview primitives itself. QueueUpdateDraw has to hand the status and
+// list refresh to the application event loop, which is the only goroutine
+// allowed to draw. A running app that also draws from its event loop races
+// if the sync path calls those primitives inline.
+func TestAppTriggerSyncDrawsOnEventLoop(t *testing.T) {
+	hl := sampleHostList()
+	fc := vault.NewFakeClient()
+	app := tviewui.New(hl, tviewui.Deps{VaultCli: fc}, nil)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("init simulation screen: %v", err)
+	}
+	screen.SetSize(120, 30)
+	app.SetScreenForTest(screen)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.Run() }()
+	t.Cleanup(func() {
+		app.StopForTest()
+		select {
+		case <-runDone:
+		case <-time.After(2 * time.Second):
+			t.Errorf("app.Run did not return after Stop")
+		}
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-app.TriggerSync():
+	case <-time.After(2 * time.Second):
+		t.Fatal("TriggerSync did not finish")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		title := app.HostPane().Title()
+		if strings.Contains(title, "Synced") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected title to contain 'Synced' after queued draw, got: %s", title)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestAppTriggerSyncSingleFlight: a tick that arrives while a sync is still
+// running must not start another one. Overlapping TriggerSync calls used to
+// each spawn a goroutine that wrote the host list and the tview panes.
+func TestAppTriggerSyncSingleFlight(t *testing.T) {
+	hl := sampleHostList()
+	fc := &blockingVaultClient{
+		entered: make(chan struct{}, 8),
+		release: make(chan struct{}),
+	}
+	app := tviewui.New(hl, tviewui.Deps{VaultCli: fc}, nil)
+
+	first := app.TriggerSync()
+	select {
+	case <-fc.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first TriggerSync did not enter Sync")
+	}
+
+	second := app.TriggerSync()
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Fatal("overlapping TriggerSync did not return while a sync was in flight")
+	}
+	if got := fc.calls.Load(); got != 1 {
+		t.Fatalf("overlapping TriggerSync started another Sync, calls=%d", got)
+	}
+
+	close(fc.release)
+	select {
+	case <-first:
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight TriggerSync did not finish after release")
+	}
+}
+
+// TestAppStartBackgroundSyncSingleFlight: calling StartBackgroundSync twice
+// must not stack ticker goroutines. The second call is a no-op, so a blocked
+// Sync is entered once even after several tick intervals.
+func TestAppStartBackgroundSyncSingleFlight(t *testing.T) {
+	hl := sampleHostList()
+	fc := &blockingVaultClient{
+		entered: make(chan struct{}, 8),
+		release: make(chan struct{}),
+	}
+	app := tviewui.New(hl, tviewui.Deps{VaultCli: fc}, nil)
+
+	app.StartBackgroundSync(15 * time.Millisecond)
+	app.StartBackgroundSync(15 * time.Millisecond)
+	t.Cleanup(func() {
+		close(fc.release)
+		app.StopBackgroundSync()
+	})
+
+	select {
+	case <-fc.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background sync did not enter Sync")
+	}
+	time.Sleep(80 * time.Millisecond)
+	if got := fc.calls.Load(); got != 1 {
+		t.Fatalf("background ticks stacked Sync calls, calls=%d", got)
 	}
 }
 
