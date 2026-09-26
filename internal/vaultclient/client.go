@@ -59,12 +59,12 @@ func (c *Client) Prelogin(email string) (*PreloginResult, error) {
 	body, _ := json.Marshal(map[string]string{"email": email})
 	resp, err := c.HTTP.Post(c.BaseURL+"/identity/accounts/prelogin", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, loginTransportError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("prelogin: status %d: %s", resp.StatusCode, string(raw))
+		return nil, loginHTTPError(resp.StatusCode, raw)
 	}
 	var pr PreloginResult
 	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
@@ -77,14 +77,14 @@ func (c *Client) Prelogin(email string) (*PreloginResult, error) {
 // encrypted Protected Symmetric Key + the RSA keypair (public DER base64 +
 // encrypted private key). All derived from the master password + email.
 type AccountKeys struct {
-	Email            string
-	MasterPassword   string
-	MasterKey        []byte
-	AuthHashB64      string // base64 of PBKDF2(password, masterKey, 1) — sent as the `password` to login
-	SymmetricKey     []byte // 64 bytes (symEnc||symMac) — used to encrypt vault items at rest
-	ProtectedKey     string // type-2 encrypted SymmetricKey under master-stretched enc/mac
-	PublicKeyB64     string // PKIX RSA public key, base64
-	EncPrivateKey    string // type-2 encrypted PKCS8 RSA private key under SymmetricKey
+	Email          string
+	MasterPassword string
+	MasterKey      []byte
+	AuthHashB64    string // base64 of PBKDF2(password, masterKey, 1) — sent as the `password` to login
+	SymmetricKey   []byte // 64 bytes (symEnc||symMac) — used to encrypt vault items at rest
+	ProtectedKey   string // type-2 encrypted SymmetricKey under master-stretched enc/mac
+	PublicKeyB64   string // PKIX RSA public key, base64
+	EncPrivateKey  string // type-2 encrypted PKCS8 RSA private key under SymmetricKey
 }
 
 // DeriveAccountKeys derives the full per-account cryptographic material from
@@ -141,8 +141,8 @@ func (c *Client) Register(ak *AccountKeys, kdfIterations int) error {
 			"publicKey":           ak.PublicKeyB64,
 			"encryptedPrivateKey": ak.EncPrivateKey,
 		},
-		"kdf":            KdfPBKDF2,
-		"kdfIterations":  kdfIterations,
+		"kdf":              KdfPBKDF2,
+		"kdfIterations":    kdfIterations,
 		"deviceIdentifier": hex.EncodeToString(devID),
 	}
 	raw, _ := json.Marshal(body)

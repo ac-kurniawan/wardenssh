@@ -165,9 +165,12 @@ func (m *SetupModal) updateTitle() {
 		m.form.SetTitle(" Vault Unlock ")
 		return
 	}
-	if m.errMsg != "" {
+	switch {
+	case m.loggingIn:
+		m.form.SetTitle(fmt.Sprintf(" Unlocking %s… ", prompt))
+	case m.errMsg != "":
 		m.form.SetTitle(fmt.Sprintf(" Unlock Vault: %s [red](%s)[-] ", prompt, m.errMsg))
-	} else {
+	default:
 		m.form.SetTitle(fmt.Sprintf(" Unlock Vault: %s ", prompt))
 	}
 }
@@ -257,6 +260,8 @@ func (m *SetupModal) Submit() {
 	}
 	m.loggingIn = true
 	m.errMsg = ""
+	m.setFormLocked(true)
+	m.updateTitle()
 	v := m.vaults[m.idx]
 	cf := m.customFields
 
@@ -266,10 +271,13 @@ func (m *SetupModal) Submit() {
 		if err != nil {
 			m.mu.Lock()
 			m.loggingIn = false
-			m.errMsg = fmt.Sprintf("login %q: %v", v.Name, err)
+			m.errMsg = err.Error()
 			m.password = ""
 			m.mu.Unlock()
-			m.redraw(m.updateTitle)
+			m.redraw(func() {
+				m.setFormLocked(false)
+				m.updateTitle()
+			})
 			return
 		}
 		if sess.RefreshToken != "" {
@@ -279,10 +287,13 @@ func (m *SetupModal) Submit() {
 		if err != nil {
 			m.mu.Lock()
 			m.loggingIn = false
-			m.errMsg = fmt.Sprintf("sync %q: %v", v.Name, err)
+			m.errMsg = "Signed in, but the vault could not be loaded. Try again"
 			m.password = ""
 			m.mu.Unlock()
-			m.redraw(m.updateTitle)
+			m.redraw(func() {
+				m.setFormLocked(false)
+				m.updateTitle()
+			})
 			return
 		}
 		src := vaultadapterNewSource(v.Name, sess, sr.Ciphers, cf)
@@ -293,6 +304,7 @@ func (m *SetupModal) Submit() {
 		m.password = ""
 		m.mu.Unlock()
 		m.redraw(func() {
+			m.setFormLocked(false)
 			m.updateTitle()
 			m.updateContextFields()
 		})
@@ -309,6 +321,36 @@ func (m *SetupModal) redraw(fn func()) {
 		return
 	}
 	m.tapp.QueueUpdateDraw(fn)
+}
+
+// setFormLocked disables the password field and the action buttons while a
+// login is in flight, and restores them afterwards. The password field is
+// the last form item; the buttons are Unlock then Skip.
+func (m *SetupModal) setFormLocked(locked bool) {
+	if m.form == nil {
+		return
+	}
+	n := m.form.GetFormItemCount()
+	if n > 0 {
+		if field, ok := m.form.GetFormItem(n - 1).(*tview.InputField); ok {
+			field.SetDisabled(locked)
+			if locked {
+				field.SetText("")
+			}
+		}
+	}
+	unlockLabel := "Unlock"
+	if locked {
+		unlockLabel = "Unlocking…"
+	}
+	if idx := m.form.GetButtonIndex("Unlock"); idx >= 0 {
+		m.form.GetButton(idx).SetLabel(unlockLabel).SetDisabled(locked)
+	} else if idx := m.form.GetButtonIndex("Unlocking…"); idx >= 0 {
+		m.form.GetButton(idx).SetLabel(unlockLabel).SetDisabled(locked)
+	}
+	if idx := m.form.GetButtonIndex("Skip"); idx >= 0 {
+		m.form.GetButton(idx).SetDisabled(locked)
+	}
 }
 
 // SkipCurrent skips the current vault and advances to the next.

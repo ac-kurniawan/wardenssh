@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/ac-kurniawan/wardenssh/internal/vaultcrypto"
 )
@@ -24,8 +25,8 @@ type TokenResponse struct {
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
 	TokenType    string `json:"token_type"`
-	Key          string `json:"Key"`         // Protected Symmetric Key (type-2 encrypted, under master-stretched)
-	PrivateKey   string `json:"PrivateKey"`  // Encrypted RSA private key (type-2, under user sym key)
+	Key          string `json:"Key"`        // Protected Symmetric Key (type-2 encrypted, under master-stretched)
+	PrivateKey   string `json:"PrivateKey"` // Encrypted RSA private key (type-2, under user sym key)
 }
 
 // Session is an authenticated vault session: the access token + the decrypted
@@ -56,26 +57,26 @@ func (c *Client) Login(email, masterPassword string) (*Session, error) {
 	devID := make([]byte, 16)
 	_, _ = rand.Read(devID)
 	form := url.Values{
-		"grant_type":        {"password"},
-		"username":          {email},
-		"password":          {base64.StdEncoding.EncodeToString(authHash)},
-		"scope":             {"api offline_access"},
-		"client_id":         {"cli"},
-		"client_secret":     {"na"},
-		"deviceType":        {"2"},
-		"deviceIdentifier":  {hex.EncodeToString(devID)},
-		"deviceName":        {"wardenssh"},
+		"grant_type":       {"password"},
+		"username":         {email},
+		"password":         {base64.StdEncoding.EncodeToString(authHash)},
+		"scope":            {"api offline_access"},
+		"client_id":        {"cli"},
+		"client_secret":    {"na"},
+		"deviceType":       {"2"},
+		"deviceIdentifier": {hex.EncodeToString(devID)},
+		"deviceName":       {"wardenssh"},
 	}
 	req, _ := http.NewRequest(http.MethodPost, c.BaseURL+"/identity/connect/token", bytes.NewBufferString(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, loginTransportError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("login: status %d: %s", resp.StatusCode, string(raw))
+		return nil, loginHTTPError(resp.StatusCode, raw)
 	}
 
 	var tr TokenResponse
@@ -146,12 +147,12 @@ func (c *Client) LoginWith2FA(email, masterPassword, twoFactorCode string, provi
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, loginTransportError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("login 2fa: status %d: %s", resp.StatusCode, string(raw))
+		return nil, loginHTTPError(resp.StatusCode, raw)
 	}
 
 	var tr TokenResponse
@@ -189,13 +190,13 @@ func (c *Client) RefreshToken(refreshToken string) (*Session, error) {
 	devID := make([]byte, 16)
 	_, _ = rand.Read(devID)
 	form := url.Values{
-		"grant_type":        {"refresh_token"},
-		"refresh_token":     {refreshToken},
-		"client_id":         {"cli"},
-		"client_secret":     {"na"},
-		"deviceType":        {"2"},
-		"deviceIdentifier":  {hex.EncodeToString(devID)},
-		"deviceName":        {"wardenssh"},
+		"grant_type":       {"refresh_token"},
+		"refresh_token":    {refreshToken},
+		"client_id":        {"cli"},
+		"client_secret":    {"na"},
+		"deviceType":       {"2"},
+		"deviceIdentifier": {hex.EncodeToString(devID)},
+		"deviceName":       {"wardenssh"},
 	}
 	req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/identity/connect/token", bytes.NewBufferString(form.Encode()))
 	if err != nil {
@@ -285,9 +286,9 @@ type Cipher struct {
 	// BitWarden and VaultWarden return trashed ciphers from /api/ciphers with
 	// this field populated; Sync skips them so they never surface in the host
 	// list.
-	DeletedDate string  `json:"deletedDate,omitempty"`
-	SshKey      *SshKey `json:"sshKey,omitempty"`
-	Login       *Login  `json:"login,omitempty"`
+	DeletedDate string        `json:"deletedDate,omitempty"`
+	SshKey      *SshKey       `json:"sshKey,omitempty"`
+	Login       *Login        `json:"login,omitempty"`
 	Fields      []CustomField `json:"fields,omitempty"`
 }
 
@@ -356,3 +357,38 @@ func (s *Session) EncryptField(plain string) (string, error) {
 	return vaultcrypto.Encrypt(s.SymEnc, s.SymMac, []byte(plain))
 }
 
+// loginTransportError turns a failed dial or timeout into a message safe to
+// show on the unlock screen. The cause is kept for errors.Is/Unwrap and is
+// not part of Error(), so dial details never reach the modal.
+func loginTransportError(err error) error {
+	return &loginError{msg: "Could not reach the vault. Check the server URL and try again", cause: err}
+}
+
+// loginHTTPError classifies a rejected login response. The body is used only
+// to pick the message; it is never included, so vault exception text and
+// error codes do not reach the UI.
+func loginHTTPError(status int, body []byte) error {
+	lower := strings.ToLower(string(body))
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusBadRequest:
+		if strings.Contains(lower, "twofactor") || strings.Contains(lower, "two_factor") || strings.Contains(lower, "two-factor") {
+			return fmt.Errorf("This account requires two-factor authentication, which is not supported yet")
+		}
+		return fmt.Errorf("Wrong master password")
+	case status == http.StatusTooManyRequests:
+		return fmt.Errorf("Too many attempts. Wait a moment and try again")
+	case status >= 500:
+		return fmt.Errorf("The vault server had a problem. Try again")
+	default:
+		return fmt.Errorf("Could not unlock the vault (HTTP %d)", status)
+	}
+}
+
+type loginError struct {
+	msg   string
+	cause error
+}
+
+func (e *loginError) Error() string { return e.msg }
+
+func (e *loginError) Unwrap() error { return e.cause }
