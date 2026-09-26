@@ -314,4 +314,152 @@ func TestSetupModalEnterKeySubmits(t *testing.T) {
 	}
 }
 
+// TestSetupModalShowsUnlockingWhileLoginInFlight: submitting the master
+// password must paint a loading state before the vault answers. The login
+// request is held open so the assertion sees the in-flight screen, not the
+// result.
+func TestSetupModalShowsUnlockingWhileLoginInFlight(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/accounts/prelogin", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-release
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	defer close(release)
 
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	screen.SetSize(120, 30)
+
+	app := tview.NewApplication().SetScreen(screen)
+	hl := hosts.NewList(nil)
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl, true)
+	m.SetApplication(app)
+	app.SetRoot(m.Primitive(), true)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.Run() }()
+	defer func() {
+		app.Stop()
+		<-runDone
+	}()
+
+	m.TypeRune('s')
+	m.TypeRune('e')
+	m.TypeRune('c')
+	m.TypeRune('r')
+	m.TypeRune('e')
+	m.TypeRune('t')
+	m.Submit()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("prelogin never started")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if screenHas(screen, "Unlocking") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("unlocking indicator never appeared on screen")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSetupModalFailedLoginHidesRawResponse: a rejected login must show a
+// short message. The vault's response body (error codes, exception text)
+// must not land on the screen.
+func TestSetupModalFailedLoginHidesRawResponse(t *testing.T) {
+	const raw = `{"error":"invalid_grant","error_description":"Username or password is incorrect. Try again","ErrorModel":{"Message":"internal vault trace id 9f3a"}}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/identity/accounts/prelogin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"Kdf":           0,
+			"KdfIterations": 600000,
+		})
+	})
+	mux.HandleFunc("/identity/connect/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(raw))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	screen.SetSize(120, 30)
+
+	app := tview.NewApplication().SetScreen(screen)
+	hl := hosts.NewList(nil)
+	vaults := []config.Vault{
+		{Name: "myvault", Server: srv.URL, Email: "user@example.com"},
+	}
+	m := tviewui.NewSetupModal(vaults, config.CustomFields{}, hl, true)
+	m.SetApplication(app)
+	app.SetRoot(m.Primitive(), true)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.Run() }()
+	defer func() {
+		app.Stop()
+		<-runDone
+	}()
+
+	m.TypeRune('w')
+	m.TypeRune('r')
+	m.TypeRune('o')
+	m.TypeRune('n')
+	m.TypeRune('g')
+	m.Submit()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		text := screenText(screen)
+		if strings.Contains(text, "Wrong master password") {
+			if strings.Contains(text, "invalid_grant") || strings.Contains(text, "ErrorModel") || strings.Contains(text, "9f3a") {
+				t.Fatalf("raw vault response leaked onto the screen: %s", text)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("friendly login failure never appeared; last errMsg=%q screen=%q", m.Error(), text)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func screenText(screen tcell.SimulationScreen) string {
+	cells, width, height := screen.GetContents()
+	var sb strings.Builder
+	for i := 0; i < width*height && i < len(cells); i++ {
+		for _, r := range cells[i].Runes {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+func screenHas(screen tcell.SimulationScreen, needle string) bool {
+	return strings.Contains(screenText(screen), needle)
+}

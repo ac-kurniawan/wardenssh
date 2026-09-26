@@ -316,6 +316,14 @@ func (a *App) TriggerSync() <-chan struct{} {
 	}
 	a.syncing = true
 	a.syncMu.Unlock()
+	a.queueUpdateDraw(func() {
+		const status = "Syncing…"
+		a.hostPane.SetSyncStatus(status)
+		a.hostPane.Refresh()
+		if a.topBar != nil {
+			a.topBar.SetSyncStatus(status)
+		}
+	})
 
 	go func() {
 		defer close(done)
