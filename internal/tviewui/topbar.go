@@ -51,6 +51,13 @@ func (b *TopBar) SetSyncStatus(s string) {
 	b.refresh()
 }
 
+// SetVaultNames replaces the vault pill row (called when a vault is added at
+// runtime — the pills are built once at startup otherwise).
+func (b *TopBar) SetVaultNames(names []string) {
+	b.vaultNames = names
+	b.refresh()
+}
+
 // SetSessionCounts updates the active/background counters.
 func (b *TopBar) SetSessionCounts(active, total int) {
 	b.sessCount = active

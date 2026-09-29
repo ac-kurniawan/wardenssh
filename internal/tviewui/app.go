@@ -29,6 +29,12 @@ type Deps struct {
 	AgentPipe    string
 	CustomFields config.CustomFields
 	NoKeyring    bool // true = skip OS keyring, always prompt for master password
+
+	// Config + ConfigPath enable runtime vault persistence (Ctrl+A add-vault):
+	// a successfully added vault is appended to the config file. Either may be
+	// empty (tests) — then the add works but is not persisted.
+	Config     *config.Config
+	ConfigPath string
 }
 
 // App is the main WardenSSH launcher TUI application.
@@ -48,6 +54,7 @@ type App struct {
 	deleteModal   *DeleteModal
 	scopeModal    *ScopeModal
 	helpModal     *HelpModal
+	addVaultModal *AddVaultModal
 	footer        *Footer
 	topBar        *TopBar
 	tabBar        *SessionTabBar
@@ -65,6 +72,7 @@ type App struct {
 	inCreate      bool
 	inEdit        bool
 	inDelete      bool
+	inAddVault    bool
 	inScope       bool
 	inHelp        bool
 	sshConfigPath string
@@ -652,6 +660,110 @@ func (a *App) CancelHelpModal() {
 	a.inHelp = false
 	a.overlay.RemovePage("help")
 	a.refocusAfterOverlay()
+}
+
+// configAddVault is the config-persistence seam (tests override it).
+var configAddVault = config.AddVault
+
+// SetConfigAddVaultForTest overrides the config-persistence call (tests only).
+func SetConfigAddVaultForTest(f func(*config.Config, config.Vault, config.SavePathFn, string) error) {
+	configAddVault = f
+}
+
+// ResetConfigAddVaultForTest restores the real config.AddVault.
+func ResetConfigAddVaultForTest() { configAddVault = config.AddVault }
+
+// showAddVaultModal opens the runtime add-vault form (Ctrl+A). The form runs
+// login+sync itself; only a verified vault reaches applyAddedVault.
+func (a *App) showAddVaultModal() {
+	if a.inAddVault || a.inSetup {
+		return
+	}
+	a.inAddVault = true
+	a.addVaultModal = NewAddVaultModal(a.vaults, a.deps.CustomFields, a.hostList)
+	a.addVaultModal.SetApplication(a.app)
+	a.addVaultModal.SetOnAdded(func(src *vaultadapter.Source, v config.Vault) {
+		// onAdded fires on the login goroutine; tview primitives may only be
+		// touched on the event loop. Headless (tests) run inline.
+		if a.eventLoop.Load() {
+			a.app.QueueUpdateDraw(func() { a.applyAddedVault(src, v) })
+		} else {
+			a.applyAddedVault(src, v)
+		}
+	})
+	a.addVaultModal.SetOnCancel(a.CancelAddVaultModal)
+	a.overlay.AddPage("addvault", a.addVaultModal.Primitive(), true, true)
+	a.app.SetFocus(a.addVaultModal.Primitive())
+}
+
+// CancelAddVaultModal dismisses the add-vault form without changes.
+func (a *App) CancelAddVaultModal() {
+	if !a.inAddVault {
+		return
+	}
+	a.inAddVault = false
+	a.overlay.RemovePage("addvault")
+	a.refocusAfterOverlay()
+}
+
+// applyAddedVault merges a verified vault into the running app: appends the
+// source to the live client (append-only — no re-unlock of existing vaults),
+// persists the config entry, and refreshes the vault pills + host pane.
+func (a *App) applyAddedVault(src *vaultadapter.Source, v config.Vault) {
+	if a.deps.VaultCli == nil {
+		a.deps.VaultCli = vaultadapterNewClient()
+	}
+	if err := a.deps.VaultCli.AddSource(src); err != nil {
+		if a.addVaultModal != nil {
+			a.addVaultModal.ShowError(err.Error())
+		}
+		return
+	}
+	a.vaults = append(a.vaults, v)
+
+	var persistErr error
+	if a.deps.Config != nil && a.deps.ConfigPath != "" {
+		persistErr = configAddVault(a.deps.Config, v, config.SaveFile, a.deps.ConfigPath)
+	}
+	if persistErr != nil {
+		// The vault is live in-session but will not survive a restart; keep
+		// the form open with the error so the user can cancel and continue
+		// with the session-only vault.
+		if a.addVaultModal != nil {
+			a.addVaultModal.ShowError("added for this session, but saving the config failed: " + persistErr.Error() + " — press Cancel to continue")
+		}
+		return
+	}
+
+	names := make([]string, 0, len(a.vaults))
+	for _, vv := range a.vaults {
+		if vv.Name != "" {
+			names = append(names, vv.Name)
+		}
+	}
+	a.topBar.SetVaultNames(names)
+	a.inAddVault = false
+	a.overlay.RemovePage("addvault")
+	a.hostPane.Refresh()
+	a.refocusAfterOverlay()
+}
+
+// InAddVaultModal reports whether the add-vault form is open (tests).
+func (a *App) InAddVaultModal() bool { return a.inAddVault }
+
+// ShowAddVaultModalForTest opens the add-vault form (tests only; mirrors Ctrl+A).
+func (a *App) ShowAddVaultModalForTest() { a.showAddVaultModal() }
+
+// Vaults returns the configured vaults (updated when a vault is added at
+// runtime; tests).
+func (a *App) Vaults() []config.Vault { return a.vaults }
+
+// AddVaultModal returns the active add-vault modal instance (tests only).
+func (a *App) AddVaultModal() *AddVaultModal { return a.addVaultModal }
+
+// ApplyAddedVaultForTest drives the post-login merge directly (tests only).
+func (a *App) ApplyAddedVaultForTest(src *vaultadapter.Source, v config.Vault) {
+	a.applyAddedVault(src, v)
 }
 
 // ShowScopeModalForTest opens the scope switcher (tests only; mirrors Ctrl+B).
@@ -1731,7 +1843,7 @@ func (a *App) HardCloseActiveSession() {
 //   - Setup / quit / disconnect / create / edit / delete / scope modal: passed
 //     through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
-	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inScope || a.inHelp {
+	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inScope || a.inHelp || a.inAddVault {
 		return event
 	}
 
@@ -1831,6 +1943,10 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		} else {
 			a.showScopeModal()
 		}
+		return nil
+	case tcell.KeyCtrlA:
+		// Ctrl+A opens the add-vault form (runtime vault add, host pane only).
+		a.showAddVaultModal()
 		return nil
 	case tcell.KeyCtrlS:
 		// Ctrl+S ALWAYS opens the scope switcher modal.

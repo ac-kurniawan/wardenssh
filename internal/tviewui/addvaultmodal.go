@@ -134,10 +134,18 @@ func (m *AddVaultModal) SetEmail(s string) { m.field(2).SetText(s) }
 func (m *AddVaultModal) SetPassword(s string) { m.field(3).SetText(s) }
 
 // Error returns the last error message (for tests).
-func (m *AddVaultModal) Error() string { return m.errMsg }
+func (m *AddVaultModal) Error() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.errMsg
+}
 
 // IsDone reports whether a vault was successfully added.
-func (m *AddVaultModal) IsDone() bool { return m.done }
+func (m *AddVaultModal) IsDone() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.done
+}
 
 // Cancel closes the modal without changes.
 func (m *AddVaultModal) Cancel() {
@@ -249,6 +257,16 @@ func (m *AddVaultModal) fail(msg string) {
 		m.setFormLocked(false)
 		m.updateTitle()
 	})
+}
+
+// ShowError records a user-visible error after the modal handed control back
+// to the caller (e.g. AddSource/config persistence failed in the wiring) and
+// unlocks the form for retry.
+func (m *AddVaultModal) ShowError(msg string) {
+	m.mu.Lock()
+	m.done = false
+	m.mu.Unlock()
+	m.fail(msg)
 }
 
 // redraw runs fn on the tview event loop when an application is attached

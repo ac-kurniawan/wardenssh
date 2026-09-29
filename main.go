@@ -111,6 +111,8 @@ func run(noKeyring bool) error {
 		AgentPipe:    pipePath,
 		CustomFields: cfg.CustomFields,
 		NoKeyring:    noKeyring,
+		Config:       cfg,
+		ConfigPath:   cfgPath,
 	}
 
 	// 2. Build the initial host list (file-source only; vault hosts are
