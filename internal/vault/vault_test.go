@@ -78,3 +78,35 @@ func TestFakeSourceDecryptLogin(t *testing.T) {
 		t.Errorf("user=%q pass=%q, want admin/s3cret", user, pass)
 	}
 }
+
+// TestFakeClientAddSource: the runtime add-vault flow appends an already-
+// authenticated source to the live client (append-only — existing sources are
+// untouched, no re-prompt for their master passwords).
+func TestFakeClientAddSource(t *testing.T) {
+	srcA := vault.NewFakeSource("vw:personal", []vault.Item{{Name: "a", HostName: "h"}})
+	c := vault.NewFakeClient(srcA)
+
+	srcB := vault.NewFakeSource("vw:work", []vault.Item{{Name: "b", HostName: "h"}})
+	if err := c.AddSource(srcB); err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+
+	srcs := c.Sources()
+	if len(srcs) != 2 || srcs[0] != srcA || srcs[1] != srcB {
+		t.Fatalf("Sources() = %v, want [personal work] in order", srcs)
+	}
+}
+
+// TestFakeClientAddSourceRejectsDuplicateName: sources are unique by name
+// (the scope label); adding a second source with the same name is an error,
+// not an overwrite.
+func TestFakeClientAddSourceRejectsDuplicateName(t *testing.T) {
+	c := vault.NewFakeClient(vault.NewFakeSource("vw", nil))
+	err := c.AddSource(vault.NewFakeSource("vw", nil))
+	if err == nil {
+		t.Fatal("AddSource duplicate name = nil, want error")
+	}
+	if len(c.Sources()) != 1 {
+		t.Errorf("sources mutated on rejected add: %v", c.Sources())
+	}
+}

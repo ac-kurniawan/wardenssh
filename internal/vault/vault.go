@@ -9,6 +9,8 @@
 // an in-memory fake for tests / future offline dev mode. The real client will
 // satisfy the same interface with no call-site changes.
 package vault
+import "fmt"
+
 
 // Item is a decrypted BitWarden SSH-Key item as seen by the launcher.
 type Item struct {
@@ -57,6 +59,10 @@ type Source interface {
 type Client interface {
 	Sources() []Source
 	Sync() error
+	// AddSource appends one already-authenticated source at runtime (the
+	// add-vault flow). Append-only: existing sources stay untouched. Sources
+	// are unique by name — a duplicate is an error, not an overwrite.
+	AddSource(Source) error
 }
 
 // --- in-memory fake for tests / dev ---
@@ -109,6 +115,19 @@ type FakeClient struct{ sources []Source }
 
 // NewFakeClient builds a fake client from the given sources.
 func NewFakeClient(sources ...Source) *FakeClient { return &FakeClient{sources: sources} }
+
+// AddSource satisfies Client: appends the source unless a source with the
+// same name already exists (unique by name).
+func (c *FakeClient) AddSource(src Source) error {
+	name := src.Name()
+	for _, existing := range c.sources {
+		if existing.Name() == name {
+			return fmt.Errorf("vault: source %q already exists", name)
+		}
+	}
+	c.sources = append(c.sources, src)
+	return nil
+}
 
 // Sources satisfies Client.
 func (c *FakeClient) Sources() []Source { return c.sources }
