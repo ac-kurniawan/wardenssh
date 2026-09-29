@@ -6,9 +6,14 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Vault is a single configured VaultWarden/BitWarden account (Q16/B multi-vault).
@@ -117,6 +122,49 @@ func DefaultPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".ssh", "wardenssh.json"), nil
+}
+
+// ValidateVaultName enforces vault-name constraints: the name is the OS-keyring
+// namespace, the host-list scope label, and a top-bar pill, so it must be
+// non-empty after trimming, at most 32 runes, and free of control characters.
+// The caller must store the trimmed form.
+func ValidateVaultName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return errors.New("vault name is empty")
+	}
+	if utf8.RuneCountInString(trimmed) > 32 {
+		return errors.New("vault name is longer than 32 characters")
+	}
+	for _, r := range trimmed {
+		if unicode.IsControl(r) {
+			return errors.New("vault name contains control characters")
+		}
+	}
+	return nil
+}
+
+// SavePathFn persists a Config to a path (matches SaveFile's signature; the
+// modal injects it so tests never touch the real ~/.ssh).
+type SavePathFn func(path string, cfg *Config) error
+
+// AddVault appends one vault to cfg and persists it via save. It validates the
+// name (trimmed before storing) and rejects duplicates — vaults are unique by
+// Name (the keyring namespace and scope label). The caller is expected to run
+// it only after the vault's login+sync succeeded, so only verified entries
+// reach the config file.
+func AddVault(cfg *Config, v Vault, save SavePathFn, path string) error {
+	v.Name = strings.TrimSpace(v.Name)
+	if err := ValidateVaultName(v.Name); err != nil {
+		return err
+	}
+	for _, existing := range cfg.Vaults {
+		if existing.Name == v.Name {
+			return fmt.Errorf("vault %q is already configured", v.Name)
+		}
+	}
+	cfg.Vaults = append(cfg.Vaults, v)
+	return save(path, cfg)
 }
 
 // applyDefaults fills any zero-valued custom-field name or UI sort with its
