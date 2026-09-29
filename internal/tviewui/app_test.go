@@ -184,6 +184,7 @@ type failingVaultClient struct{}
 
 func (f *failingVaultClient) Sources() []vault.Source { return nil }
 func (f *failingVaultClient) Sync() error             { return fmt.Errorf("network connection failed") }
+func (f *failingVaultClient) AddSource(vault.Source) error { return nil }
 
 func TestAppTriggerSyncOfflineStatusOnSyncError(t *testing.T) {
 	hl := sampleHostList()
@@ -218,6 +219,8 @@ func (b *blockingVaultClient) Sync() error {
 	<-b.release
 	return nil
 }
+
+func (b *blockingVaultClient) AddSource(vault.Source) error { return nil }
 
 // TestAppTriggerSyncDrawsOnEventLoop: the background sync goroutine must not
 // touch tview primitives itself. QueueUpdateDraw has to hand the status and

@@ -348,6 +348,19 @@ func (c *Client) SyncAll(vc *vaultclient.Client) error {
 	return nil
 }
 
+// AddSource satisfies vault.Client: appends one already-authenticated source
+// at runtime (the add-vault flow). Append-only; duplicate names are errors.
+func (c *Client) AddSource(src vault.Source) error {
+	name := src.Name()
+	for _, existing := range c.sources {
+		if existing.Name() == name {
+			return fmt.Errorf("vaultadapter: source %q already exists", name)
+		}
+	}
+	c.sources = append(c.sources, src)
+	return nil
+}
+
 // SourceByName returns the Source with the given name (matching either "vw:<name>" or "<name>").
 func (c *Client) SourceByName(name string) *Source {
 	for _, src := range c.sources {

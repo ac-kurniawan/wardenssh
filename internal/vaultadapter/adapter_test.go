@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ac-kurniawan/wardenssh/internal/config"
+	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultcrypto"
@@ -665,5 +666,40 @@ func TestSourceItemsConcurrentWithSync(t *testing.T) {
 	}
 	if len(final) != 1 {
 		t.Fatalf("final items = %d, want 1", len(final))
+	}
+}
+
+// TestClientAddSourceAppends: the runtime add-vault flow appends an already-
+// authenticated source to the live aggregate — existing sources keep their
+// order and identity (append-only, no rebuild).
+func TestClientAddSourceAppends(t *testing.T) {
+	c := vaultadapter.NewClient()
+	first := vault.NewFakeSource("vw:personal", []vault.Item{{Name: "a", HostName: "h"}})
+	if err := c.AddSource(first); err != nil {
+		t.Fatalf("AddSource(first): %v", err)
+	}
+	second := vault.NewFakeSource("vw:work", []vault.Item{{Name: "b", HostName: "h"}})
+	if err := c.AddSource(second); err != nil {
+		t.Fatalf("AddSource(second): %v", err)
+	}
+
+	srcs := c.Sources()
+	if len(srcs) != 2 || srcs[0].Name() != "vw:personal" || srcs[1].Name() != "vw:work" {
+		t.Fatalf("Sources() = %v, want [vw:personal vw:work]", srcs)
+	}
+}
+
+// TestClientAddSourceRejectsDuplicateName: sources are unique by name — a
+// duplicate add is an error and does not mutate the source list.
+func TestClientAddSourceRejectsDuplicateName(t *testing.T) {
+	c := vaultadapter.NewClient()
+	if err := c.AddSource(vault.NewFakeSource("vw", nil)); err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+	if err := c.AddSource(vault.NewFakeSource("vw", nil)); err == nil {
+		t.Fatal("AddSource duplicate = nil, want error")
+	}
+	if len(c.Sources()) != 1 {
+		t.Fatalf("sources mutated on rejected add: %d", len(c.Sources()))
 	}
 }

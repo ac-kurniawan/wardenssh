@@ -48,6 +48,7 @@ func helpText(mode string) string {
 		key("[Ctrl+E]") + "     Edit connection\n" +
 		key("[Ctrl+D]") + "     Delete host\n" +
 		key("[Ctrl+R]") + "     Sync vault\n" +
+		key("[Ctrl+A]") + "     Add vault\n" +
 		key("[?]") + "         This help\n" +
 		key("[Ctrl+Q]") + "     Quit WardenSSH"
 	terminal := key("[Ctrl+\\] / [Ctrl+B]") + " Focus sidebar (host list)\n" +

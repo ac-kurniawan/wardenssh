@@ -160,3 +160,93 @@ func TestLoadParsesTypeOverride(t *testing.T) {
 		t.Errorf("CustomFields.Type = %q, want kind", cfg.CustomFields.Type)
 	}
 }
+
+// TestValidateVaultName: vault names are the keyring namespace, scope label,
+// and top-bar pill, so they must be non-empty after trimming, ≤32 runes, and
+// free of control characters. Valid names return nil.
+func TestValidateVaultName(t *testing.T) {
+	cases := []struct {
+		name string
+		want string // "" means valid
+	}{
+		{"vw", ""},
+		{"Work Vault", ""},
+		{"", "empty"},
+		{"   ", "empty"},
+		{"  padded  ", ""},   // trimmed internally; caller stores the trimmed form
+		{"a-" + strings.Repeat("x", 30), ""}, // exactly 32 runes
+		{"a-" + strings.Repeat("x", 31), "too long"}, // 33 runes
+		{"bad\x00name", "control"},
+		{"bad\ttab", "control"},
+	}
+	for _, c := range cases {
+		err := config.ValidateVaultName(c.name)
+		if c.want == "" && err != nil {
+			t.Errorf("ValidateVaultName(%q) = %v, want nil", c.name, err)
+		}
+		if c.want != "" && err == nil {
+			t.Errorf("ValidateVaultName(%q) = nil, want error (%s)", c.name, c.want)
+		}
+	}
+}
+
+// TestAddVaultAppendsAndSaves: AddVault validates the name, rejects duplicates
+// (vaults are unique by Name), appends to the existing list preserving other
+// vaults and settings, and saves via the injected path.
+func TestAddVaultAppendsAndSaves(t *testing.T) {
+	cfg := config.Default()
+	cfg.Vaults = []config.Vault{{Name: "vw", Server: "https://vw.example.com", Email: "me@x"}}
+
+	saved := ""
+	savePath := func(p string, c *config.Config) error {
+		saved = p
+		var buf bytes.Buffer
+		if err := config.Save(&buf, c); err != nil {
+			return err
+		}
+		cfg = c
+		return nil
+	}
+
+	err := config.AddVault(cfg, config.Vault{Name: "work", Server: "https://vw2.example.com", Email: "w@x"}, savePath, "/tmp/wardenssh.json")
+	if err != nil {
+		t.Fatalf("AddVault: %v", err)
+	}
+	if saved != "/tmp/wardenssh.json" {
+		t.Errorf("save path = %q, want /tmp/wardenssh.json", saved)
+	}
+	if len(cfg.Vaults) != 2 || cfg.Vaults[1].Name != "work" {
+		t.Fatalf("vaults after add = %+v, want [vw work]", cfg.Vaults)
+	}
+	if cfg.Vaults[0].Name != "vw" || cfg.CustomFields.Host != "host" || !cfg.Keyring {
+		t.Errorf("existing vaults/settings clobbered: %+v", cfg)
+	}
+}
+
+// TestAddVaultRejectsDuplicateName: vaults are unique by Name (the keyring
+// namespace and scope label) — a second add with the same name is an error,
+// not an overwrite.
+func TestAddVaultRejectsDuplicateName(t *testing.T) {
+	cfg := config.Default()
+	cfg.Vaults = []config.Vault{{Name: "vw", Server: "https://a", Email: "a@x"}}
+	err := config.AddVault(cfg, config.Vault{Name: "vw", Server: "https://b", Email: "b@x"}, func(string, *config.Config) error { return nil }, "/tmp/x.json")
+	if err == nil {
+		t.Fatal("AddVault duplicate name = nil, want error")
+	}
+	if len(cfg.Vaults) != 1 {
+		t.Errorf("vaults mutated on rejected add: %+v", cfg.Vaults)
+	}
+}
+
+// TestAddVaultRejectsInvalidName: an invalid vault name fails before any save.
+func TestAddVaultRejectsInvalidName(t *testing.T) {
+	cfg := config.Default()
+	called := false
+	err := config.AddVault(cfg, config.Vault{Name: "  ", Server: "https://a", Email: "a@x"}, func(string, *config.Config) error { called = true; return nil }, "/tmp/x.json")
+	if err == nil {
+		t.Fatal("AddVault blank name = nil, want error")
+	}
+	if called {
+		t.Error("save called despite invalid name")
+	}
+}
