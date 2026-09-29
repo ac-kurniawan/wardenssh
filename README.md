@@ -167,6 +167,7 @@ To have an SSH Key item from Bitwarden/Vaultwarden appear in your WardenSSH host
 | Type any text | Fuzzy filter hosts |
 | `Esc` | Clear filter — or open the quit confirmation modal when the filter is empty |
 | `q` / `Ctrl+C` | Open the exit confirmation modal |
+| `Ctrl+A` | Add a new vault at runtime (name, server, email, master password; login+sync must succeed before it is saved) |
 | `Ctrl+B` | Move focus to the terminal pane (when a session is running) |
 
 ### Terminal pane (right)
