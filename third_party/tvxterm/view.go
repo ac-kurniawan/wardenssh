@@ -221,6 +221,12 @@ func (v *View) Draw(screen tcell.Screen) {
 
 func (v *View) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return v.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		// Shift+PgUp/PgDn/Home/End belong to the pane, not the remote app:
+		// they move the local scrollback and must not be forwarded.
+		if v.handleScrollKey(event) {
+			return
+		}
+
 		v.mu.RLock()
 		backend := v.backend
 		v.mu.RUnlock()
@@ -685,6 +691,25 @@ func (v *View) scrollOffsetValue() int {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.scrollOffset
+}
+
+// ScrollbackText returns the retained scrollback as text, oldest line first.
+// Lines are trimmed of trailing blanks; blank rows stay empty so the output's
+// shape is preserved.
+func (v *View) ScrollbackText() string {
+	return cellsToText(v.emu.ScrollbackRows())
+}
+
+// cellsToText renders rows of cells as newline-separated text.
+func cellsToText(rows [][]Cell) string {
+	var out strings.Builder
+	for i, row := range rows {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(strings.TrimRight(cellsToString(row), " "))
+	}
+	return out.String()
 }
 
 func (v *View) resetScrollback() {

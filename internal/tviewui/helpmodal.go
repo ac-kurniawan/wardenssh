@@ -54,6 +54,8 @@ func helpText(mode string) string {
 	terminal := key("[Ctrl+\\] / [Ctrl+B]") + " Focus sidebar (host list)\n" +
 		key("[Ctrl+S]") + "   Scope switcher (groups)\n" +
 		key("[Ctrl+PgUp/PgDn]") + " Prev / next session tab\n" +
+		key("[Shift+PgUp/PgDn]") + " Scroll pane history (page)\n" +
+		key("[Shift+Home/End]") + " History top / live output\n" +
 		key("[Ctrl+Shift+C]") + " Copy selection\n" +
 		key("[Ctrl+C]") + "    Copy / SIGINT\n" +
 		key("[Ctrl+D]") + "    Disconnect session\n" +

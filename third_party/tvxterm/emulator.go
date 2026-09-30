@@ -1460,6 +1460,19 @@ func (e *Emulator) ScrollbackCounters() (added, removed int) {
 	return e.scrollbackAdded, e.scrollbackRemoved
 }
 
+// ScrollbackRows returns a copy of the retained scrollback, oldest first.
+func (e *Emulator) ScrollbackRows() [][]Cell {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([][]Cell, len(e.scrollback))
+	for i, row := range e.scrollback {
+		copied := make([]Cell, len(row))
+		copy(copied, row)
+		out[i] = copied
+	}
+	return out
+}
+
 func (e *Emulator) resetStyle() {
 	e.style = StyleState{FG: tcell.ColorDefault, BG: tcell.ColorDefault}
 }

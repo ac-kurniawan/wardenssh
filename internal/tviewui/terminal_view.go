@@ -33,6 +33,13 @@ type terminalView struct {
 	titleBase string
 }
 
+// ScrollbackText returns the pane's retained history as text, oldest first, so
+// callers outside the package can assert on what the remote actually sent
+// (tests, smoke runs).
+func (s *terminalView) ScrollbackText() string {
+	return s.View.ScrollbackText()
+}
+
 // Dragging reports whether a primary-button text selection is in progress.
 func (s *terminalView) Dragging() bool {
 	if s == nil {

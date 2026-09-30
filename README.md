@@ -174,12 +174,19 @@ To have an SSH Key item from Bitwarden/Vaultwarden appear in your WardenSSH host
 
 | Key / Shortcut | Action |
 | :--- | :--- |
-| Mouse click-drag | Select terminal text; copied to the OS clipboard on release |
+| Mouse wheel | Scroll the pane's own history at a plain shell; at a full-screen app that does not use the mouse (less, man) it sends Up/Down keys; in an app that uses the mouse (vim `mouse=a`, htop, tmux) it scrolls that app's own buffer |
+| `Shift+PgUp` / `Shift+PgDn` | Scroll the pane's own history by one page less a line |
+| `Shift+Home` / `Shift+End` | Jump to the oldest retained line / back to the live output |
 | `Ctrl+C` (with a selection) | Copy the selection to the OS clipboard |
 | `Ctrl+C` (no selection) | Forwarded to the remote shell as SIGINT |
 | `Ctrl+B` | Return focus to the host list (session keeps running) |
 | `Esc` | Forwarded to the remote shell (e.g. exits insert mode in vim) |
 | All other keys | Forwarded to the remote shell |
+
+While scrolled up, the pane title reports how far above the live output you are
+(`host [↑ 42]`), and new output does not move the text under you. Any key sent
+to the remote returns the view to the live output. The pane keeps the last 1000
+lines.
 
 Copy reaches the OS clipboard via the native Wayland/X11 tool
 (`wl-copy`/`xclip`/`xsel`) when available, falling back to the OSC 52 escape

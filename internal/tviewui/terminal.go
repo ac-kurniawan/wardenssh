@@ -628,6 +628,36 @@ func (p *TerminalPane) PingSlotForTest() string {
 	return ""
 }
 
+// ScrollableTerminal exposes the scrollback operations of the displayed
+// session's view, so callers outside the package can drive and inspect pane
+// history (tests, smoke runs). It returns nil when no session is displayed.
+type ScrollableTerminal interface {
+	ScrollbackUp(lines int)
+	ScrollbackDown(lines int)
+	ScrollbackPageUp()
+	ScrollbackPageDown()
+	ScrollbackTop()
+	ScrollbackBottom()
+	ScrollbackStatus() (offset, rows int)
+	ScrollbackText() string
+	SendKey(event *tcell.EventKey) bool
+}
+
+// ActiveViewForTest returns the displayed session's scrollable view (tests).
+func (p *TerminalPane) ActiveViewForTest() ScrollableTerminal {
+	p.mu.Lock()
+	s := p.sessions[p.active]
+	p.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	tv, _ := s.view.(*terminalView)
+	if tv == nil {
+		return nil
+	}
+	return tv
+}
+
 // SetSessionViewForTest attaches a terminal view to an already registered
 // session (tests only; mirrors SetSessionForTest).
 func (p *TerminalPane) SetSessionViewForTest(key string, view tview.Primitive) {
