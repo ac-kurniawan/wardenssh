@@ -1,8 +1,9 @@
 package tviewui_test
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -13,13 +14,32 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/tviewui"
 )
 
-// scrollSmokeCmd prints a numbered banner then keeps running, so the session
-// has real scrollback to move through and stays alive while the test drives it.
+// scrollSmokeHelperEnv makes the test binary act as the smoke session's shell.
+const scrollSmokeHelperEnv = "WARDENSSH_SCROLL_SMOKE_HELPER"
+
+// scrollSmokeBanner is the marker line the pane's scrollback must contain.
+const scrollSmokeBanner = "wardenssh-line-"
+
+// scrollSmokeCmd runs the test binary itself as the session's process, under a
+// real PTY. Using the test binary instead of a platform shell keeps the test
+// end-to-end on every OS without depending on cmd/PowerShell/sh quoting: the
+// child writes the banner, then stays alive so the session survives the test.
 func scrollSmokeCmd() *exec.Cmd {
-	if runtime.GOOS == "windows" {
-		return exec.Command("cmd", "/c", "for /L %i in (1,1,60) do @echo wardenssh-line-%i & ping -n 30 127.0.0.1 >nul")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestScrollSmokeHelper$")
+	cmd.Env = append(os.Environ(), scrollSmokeHelperEnv+"=1")
+	return cmd
+}
+
+// TestScrollSmokeHelper is not a test of its own: it is the child process the
+// smoke test spawns as its shell. It is skipped unless the parent asked for it.
+func TestScrollSmokeHelper(t *testing.T) {
+	if os.Getenv(scrollSmokeHelperEnv) != "1" {
+		t.Skip("helper process for TestTerminalScrollSmokeRealSession")
 	}
-	return exec.Command("sh", "-c", "for i in $(seq 1 60); do echo wardenssh-line-$i; done; sleep 30")
+	for i := 1; i <= 60; i++ {
+		fmt.Printf("%s%d\n", scrollSmokeBanner, i)
+	}
+	time.Sleep(30 * time.Second)
 }
 
 // TestTerminalScrollSmokeRealSession drives a real shell over a real PTY and
@@ -54,17 +74,17 @@ func TestTerminalScrollSmokeRealSession(t *testing.T) {
 	// check: the PTY output has to travel through the session into this view.
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(view.ScrollbackText(), "wardenssh-line-10") {
+		if strings.Contains(view.ScrollbackText(), scrollSmokeBanner+"10") {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	text := view.ScrollbackText()
-	if !strings.Contains(text, "wardenssh-line-") {
+	if !strings.Contains(text, scrollSmokeBanner) {
 		t.Fatalf("real session's banner never reached the pane; title=%q scrollback=%q",
 			app.TerminalPane().ActiveTitle(), text)
 	}
-	if !strings.Contains(text, "wardenssh-line-10") {
+	if !strings.Contains(text, scrollSmokeBanner+"10") {
 		t.Fatalf("expected at least 10 lines of real output; got %q", text)
 	}
 
