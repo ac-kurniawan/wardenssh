@@ -82,7 +82,6 @@ const mouseEnable = "\x1b[?1000h\x1b[?1006h"
 // there, so the pane has nothing local to scroll.
 const altScreenEnable = "\x1b[?1049h"
 
-
 // scrollTestView builds a terminal view with 60 lines of output and a fixed
 // set of remote terminal modes, then waits until the output has been consumed.
 // inner mode values:
