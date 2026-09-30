@@ -793,8 +793,8 @@ func TestTerminalTitleShowsScrollPosition(t *testing.T) {
 	view, _ := fedView(t)
 	defer view.Close()
 
-	base := view.GetTitle()
-	if base != " host-a " {
+	base := view.TerminalTitle()
+	if base != "host-a" {
 		t.Fatalf("precondition: unexpected base title %q", base)
 	}
 	if strings.Contains(base, "↑") {
@@ -807,12 +807,12 @@ func TestTerminalTitleShowsScrollPosition(t *testing.T) {
 		t.Fatal("precondition: expected the view to be scrolled up")
 	}
 	want := fmt.Sprintf("[↑ %d]", offset)
-	if got := view.GetTitle(); !strings.Contains(got, want) {
+	if got := view.TerminalTitle(); !strings.Contains(got, want) {
 		t.Fatalf("scrolled title = %q, want it to contain %q", got, want)
 	}
 
 	view.ScrollbackDown(offset)
-	if got := view.GetTitle(); strings.Contains(got, "↑") {
+	if got := view.TerminalTitle(); strings.Contains(got, "↑") {
 		t.Fatalf("title after returning to the bottom = %q, want no scroll marker", got)
 	}
 }
@@ -839,7 +839,7 @@ func TestTerminalTitleMarkerSurvivesSessionChrome(t *testing.T) {
 	want := fmt.Sprintf("[↑ %d]", offset)
 	pane.SetSessionTitleState(true)
 
-	if got := view.GetTitle(); !strings.Contains(got, want) {
+	if got := view.TerminalTitle(); !strings.Contains(got, want) {
 		t.Fatalf("title after the chrome rewrite = %q, want it to still contain %q", got, want)
 	}
 	if got := pane.ActiveTitle(); !strings.Contains(got, want) {
@@ -938,7 +938,7 @@ func TestTerminalTitleMarkerTracksNewOutput(t *testing.T) {
 	if after == before {
 		t.Fatalf("precondition: expected the anchor to push the view deeper, still %d", after)
 	}
-	if got := view.GetTitle(); !strings.Contains(got, fmt.Sprintf("[↑ %d]", after)) {
+	if got := view.TerminalTitle(); !strings.Contains(got, fmt.Sprintf("[↑ %d]", after)) {
 		t.Fatalf("title after new output = %q, want it to report %d lines above live", got, after)
 	}
 }
@@ -950,12 +950,12 @@ func TestTerminalTitleMarkerClearsOnTyping(t *testing.T) {
 	defer view.Close()
 
 	view.ScrollbackUp(4)
-	if got := view.GetTitle(); !strings.Contains(got, "↑") {
+	if got := view.TerminalTitle(); !strings.Contains(got, "↑") {
 		t.Fatalf("precondition: expected a scroll marker, got %q", got)
 	}
 
 	view.SendKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
-	if got := view.GetTitle(); strings.Contains(got, "↑") {
+	if got := view.TerminalTitle(); strings.Contains(got, "↑") {
 		t.Fatalf("title after typing = %q, want no scroll marker", got)
 	}
 }

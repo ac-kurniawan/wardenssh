@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 
@@ -370,7 +369,7 @@ func (p *TerminalPane) ActiveTitle() string {
 	}
 	p.mu.Unlock()
 	if b, ok := view.(*terminalView); ok {
-		return strings.TrimSuffix(strings.TrimPrefix(b.GetTitle(), " "), " ")
+		return b.TerminalTitle()
 	}
 	return title
 }

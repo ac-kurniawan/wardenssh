@@ -2,6 +2,7 @@ package tviewui
 
 import (
 	"fmt"
+	"sync"
 
 	tvxterm "github.com/ac-kurniawan/wardenssh/third_party/tvxterm"
 	"github.com/gdamore/tcell/v2"
@@ -28,9 +29,14 @@ type terminalView struct {
 	dragging             bool // a primary-button selection drag is in progress
 	lastDragX, lastDragY int
 
-	// titleBase is the title the session chrome assigned; the scroll marker is
-	// appended to a copy, so a chrome rewrite always restores the marker.
+	// titleBase is the title the session chrome assigned. The visible title is
+	// composed from it plus the scroll marker during Draw, on the UI goroutine:
+	// writing the title from the PTY read goroutine would race the renderer.
 	titleBase string
+
+	// titleMu guards titleBase, which the chrome writes from the UI goroutine
+	// and Draw reads from the UI goroutine, but tests read directly.
+	titleMu sync.Mutex
 }
 
 // ScrollbackText returns the pane's retained history as text, oldest first, so
@@ -54,33 +60,47 @@ func newTerminalView(app *tview.Application, title string) *terminalView {
 	term := &terminalView{View: tvxterm.New(app)}
 	term.SetBorder(true)
 	term.SetScrollbar(true)
-	// The widget notifies on every scroll change (wheel, keys, scrollbar,
-	// output advancing an anchored view, input snapping back), so the title
-	// marker is refreshed from one place instead of at each call site.
-	term.SetScrollHandler(func(*tvxterm.View) { term.applyTitle() })
+	// The scroll marker is composed into the title during Draw, so scrolling
+	// from any goroutine needs no title write of its own: the next frame picks
+	// the new offset up. Scrolling always requests a redraw.
+	term.Box.SetDrawFunc(term.refreshTitle)
 	term.SetTerminalTitle(title)
 	return term
 }
 
-// SetTerminalTitle records the session chrome's title and applies it together
-// with the current scroll marker. The chrome rewrites the title on every uptime
-// tick, so the marker cannot be stored in the view's title alone.
+// SetTerminalTitle records the session chrome's title. The scroll marker is
+// added when the title is rendered, so a chrome rewrite cannot drop it.
 func (s *terminalView) SetTerminalTitle(title string) {
+	s.titleMu.Lock()
 	s.titleBase = title
-	s.applyTitle()
+	s.titleMu.Unlock()
 }
 
-// TitleBase returns the title without the scroll marker.
-func (s *terminalView) TitleBase() string { return s.titleBase }
-
-// applyTitle writes the base title plus, when the view is scrolled up, how many
-// lines above the live output it is showing.
-func (s *terminalView) applyTitle() {
+// TerminalTitle returns the title as rendered: the chrome's title plus the
+// scroll marker when the view is scrolled up.
+func (s *terminalView) TerminalTitle() string {
+	s.titleMu.Lock()
 	title := s.titleBase
+	s.titleMu.Unlock()
 	if offset, _ := s.ScrollbackStatus(); offset > 0 {
-		title = fmt.Sprintf("%s [↑ %d]", title, offset)
+		return fmt.Sprintf("%s [↑ %d]", title, offset)
 	}
-	s.SetTitle(" " + title + " ")
+	return title
+}
+
+// refreshTitle composes the visible title from the chrome's title and the
+// current scroll offset, then returns the box's inner rect for tview. It runs
+// from Draw, i.e. on the UI goroutine — the only goroutine allowed to write
+// tview state — so scrolling from the PTY read goroutine never touches it.
+func (s *terminalView) refreshTitle(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+	s.SetTitle(" " + s.TerminalTitle() + " ")
+	// Mirror the inset tview applies to a bordered box, which is what
+	// GetInnerRect reports once this draw function's return value is stored:
+	// the terminal content is laid out inside the border.
+	if width < 2 || height < 2 {
+		return x, y, width, height
+	}
+	return x + 1, y + 1, width - 2, height - 2
 }
 
 // MouseHandler routes mouse events for the terminal:
