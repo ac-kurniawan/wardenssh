@@ -60,10 +60,9 @@ func newTerminalView(app *tview.Application, title string) *terminalView {
 	term := &terminalView{View: tvxterm.New(app)}
 	term.SetBorder(true)
 	term.SetScrollbar(true)
-	// The scroll marker is composed into the title during Draw, so scrolling
-	// from any goroutine needs no title write of its own: the next frame picks
-	// the new offset up. Scrolling always requests a redraw.
-	term.Box.SetDrawFunc(term.refreshTitle)
+	// The scroll marker is composed into the title by Draw, which runs on the
+	// UI goroutine: scrolling from the PTY read goroutine needs no title write
+	// of its own, the next frame picks the new offset up.
 	term.SetTerminalTitle(title)
 	return term
 }
@@ -88,19 +87,14 @@ func (s *terminalView) TerminalTitle() string {
 	return title
 }
 
-// refreshTitle composes the visible title from the chrome's title and the
-// current scroll offset, then returns the box's inner rect for tview. It runs
-// from Draw, i.e. on the UI goroutine — the only goroutine allowed to write
-// tview state — so scrolling from the PTY read goroutine never touches it.
-func (s *terminalView) refreshTitle(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+// Draw composes the visible title, then renders the terminal. Computing the
+// title here is what keeps the scroll marker on the surface the user reads:
+// tview draws the box title before any draw function runs, so the title must be
+// in place beforehand. This runs on the UI goroutine — the only one allowed to
+// write tview state — so scrolling from the PTY read goroutine never touches it.
+func (s *terminalView) Draw(screen tcell.Screen) {
 	s.SetTitle(" " + s.TerminalTitle() + " ")
-	// Mirror the inset tview applies to a bordered box, which is what
-	// GetInnerRect reports once this draw function's return value is stored:
-	// the terminal content is laid out inside the border.
-	if width < 2 || height < 2 {
-		return x, y, width, height
-	}
-	return x + 1, y + 1, width - 2, height - 2
+	s.View.Draw(screen)
 }
 
 // MouseHandler routes mouse events for the terminal:

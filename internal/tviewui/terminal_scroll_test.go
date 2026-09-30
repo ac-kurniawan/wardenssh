@@ -958,3 +958,93 @@ func TestTerminalTitleMarkerClearsOnTyping(t *testing.T) {
 		t.Fatalf("title after typing = %q, want no scroll marker", got)
 	}
 }
+
+// TestTerminalNoPhantomMarkerOnAltScreen: when the remote app switches to the
+// alternate screen while the pane is scrolled up, the emulator drops the
+// scrollback. A stale offset would leave the title claiming "[↑ N]" over a live
+// full-screen app, so the marker must disappear with the history it measured.
+func TestTerminalNoPhantomMarkerOnAltScreen(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	view.ScrollbackUp(5)
+	if offset, rows := view.ScrollbackStatus(); offset == 0 || rows == 0 {
+		t.Fatalf("precondition: expected a scrolled view with history, offset=%d rows=%d", offset, rows)
+	}
+
+	feed(t, view, altScreenEnable)
+
+	offset, rows := view.ScrollbackStatus()
+	if rows != 0 {
+		t.Fatalf("precondition: the alternate screen should have no history, rows=%d", rows)
+	}
+	if offset != 0 {
+		t.Errorf("alternate screen kept a stale scroll offset %d with no history", offset)
+	}
+	if got := view.TerminalTitle(); strings.Contains(got, "↑") {
+		t.Errorf("title over a live full-screen app = %q, want no scroll marker", got)
+	}
+	if start := firstVisibleRowOf(view); start != 0 {
+		t.Errorf("expected the live screen to be shown, first visible row=%d", start)
+	}
+}
+
+// TestTerminalDrawnTitleShowsMarker: the marker has to reach the border the user
+// reads, not just the accessor. Rendering the pane into a simulation screen and
+// reading the title row is what pins the visible contract.
+func TestTerminalDrawnTitleShowsMarker(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+	// The 12-cell fixture is too narrow for a title; use a realistic pane width.
+	view.SetRect(0, 0, 80, 6)
+
+	if got := drawnTitle(t, view); !strings.Contains(got, "host-a") || strings.Contains(got, "↑") {
+		t.Fatalf("drawn title at the bottom = %q, want the plain session title", got)
+	}
+
+	view.ScrollbackUp(4)
+	offset, _ := view.ScrollbackStatus()
+	want := fmt.Sprintf("[↑ %d]", offset)
+	if got := drawnTitle(t, view); !strings.Contains(got, want) {
+		t.Fatalf("drawn title while scrolled = %q, want it to contain %q", got, want)
+	}
+
+	view.ScrollbackBottom()
+	if got := drawnTitle(t, view); strings.Contains(got, "↑") {
+		t.Fatalf("drawn title after returning to the bottom = %q, want no marker", got)
+	}
+}
+
+// drawnTitle renders the view and returns the text of its top border row, which
+// is where tview draws the title.
+func drawnTitle(t *testing.T, view *terminalView) string {
+	t.Helper()
+	x, y, width, _ := view.GetRect()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("init simulation screen: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(width+x, y+6)
+	view.Draw(screen)
+
+	var b strings.Builder
+	for col := 0; col < width; col++ {
+		ch, _, _, _ := screen.GetContent(x+col, y)
+		if ch == 0 {
+			ch = ' '
+		}
+		b.WriteRune(ch)
+	}
+	return b.String()
+}
+
+// firstVisibleRowOf is the wrapper-level counterpart of firstVisibleRow: with no
+// retained history the live screen starts at row 0, which is all this test needs.
+func firstVisibleRowOf(v *terminalView) int {
+	offset, rows := v.ScrollbackStatus()
+	if rows == 0 {
+		return 0
+	}
+	return max(0, rows-offset)
+}

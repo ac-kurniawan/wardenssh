@@ -263,3 +263,41 @@ func TestScrollbackUpFromTopStaysPut(t *testing.T) {
 		t.Fatalf("expected scrolling up at the top to stay at %d, got %d", top, offset)
 	}
 }
+
+// TestScrollOffsetNotLostUnderConcurrentOutput: the PTY read goroutine advances
+// the offset to keep an anchored view still while the user scrolls from the UI
+// goroutine. Adjusting the offset through a separate read and write lets one
+// clobber the other, which shows up as a scroll that moves the wrong way or a
+// jump into history. Every scroll here must be monotonic in its own direction.
+func TestScrollOffsetNotLostUnderConcurrentOutput(t *testing.T) {
+	v, _ := anchorView(t, 10, 400)
+	defer v.Close()
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			v.Feed([]byte("streamed line\n"))
+		}
+	}()
+
+	// Start anchored in history so both sides are moving the same counter.
+	v.ScrollbackUp(50)
+	for range 300 {
+		before := scrollOffset(v)
+		v.ScrollbackUp(3)
+		if after := scrollOffset(v); after < before {
+			close(stop)
+			<-done
+			t.Fatalf("scroll up moved the view the wrong way: %d -> %d", before, after)
+		}
+	}
+	close(stop)
+	<-done
+}

@@ -39,7 +39,6 @@ type View struct {
 	onBackendExit   func(*View, error)
 	onTitle         func(*View, string)
 	focused         bool
-	onScroll        func(*View)
 	closed          bool
 	scrollOffset    int
 	scrollbar       bool
@@ -117,18 +116,6 @@ func (v *View) SetTitleHandler(fn func(*View, string)) *View {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.onTitle = fn
-	return v
-}
-
-// SetScrollHandler installs a callback invoked whenever the local scroll
-// position changes: wheel and key scrolling, scrollbar jumps, output arriving
-// while scrolled up (which advances the offset to keep the content still), and
-// the reset that follows input. The pane uses it to keep its title marker
-// current without polling.
-func (v *View) SetScrollHandler(fn func(*View)) *View {
-	v.mu.Lock()
-	v.onScroll = fn
-	v.mu.Unlock()
 	return v
 }
 
@@ -571,8 +558,26 @@ func (v *View) readLoop(backend Backend) {
 }
 
 func (v *View) scrollBy(delta int) {
-	offset := v.scrollOffsetValue()
-	v.setScrollOffset(offset + delta)
+	v.addScrollOffset(delta)
+}
+
+// addScrollOffset advances the scroll offset and clamps it to the available
+// scrollback in a single lock hold. Adjusting via a separate read and write
+// would let the PTY read goroutine's anchor update clobber a concurrent wheel
+// or key scroll (and vice versa).
+func (v *View) addScrollOffset(delta int) {
+	_, _, scrollbackRows := v.emu.Dimensions()
+	v.mu.Lock()
+	v.scrollOffset = clamp(v.scrollOffset+delta, 0, scrollbackRows)
+	v.mu.Unlock()
+	v.requestRedraw()
+}
+
+// clampScrollOffset re-clamps the current offset, which is how a shrinking
+// scrollback (the cap trimming rows, or the alternate screen clearing them)
+// pulls a stale offset back into range.
+func (v *View) clampScrollOffset() {
+	v.addScrollOffset(0)
 }
 
 // ScrollbackUp moves the local scrollback view upward by the given number of
@@ -648,27 +653,13 @@ func (v *View) UsingAltScreen() bool {
 	return v.emu.Snapshot().UsingAlt
 }
 
-// setScrollOffset moves the view to an absolute scroll offset, repaints, and
-// notifies the scroll handler when the position actually changed.
+// setScrollOffset moves the view to an absolute scroll offset and repaints.
 func (v *View) setScrollOffset(offset int) {
 	_, _, scrollbackRows := v.emu.Dimensions()
 	v.mu.Lock()
-	next := clamp(offset, 0, scrollbackRows)
-	changed := next != v.scrollOffset
-	v.scrollOffset = next
-	handler := v.onScroll
+	v.scrollOffset = clamp(offset, 0, scrollbackRows)
 	v.mu.Unlock()
-	if changed {
-		v.notifyScroll(handler)
-	}
 	v.requestRedraw()
-}
-
-// notifyScroll invokes the scroll handler outside the view lock.
-func (v *View) notifyScroll(handler func(*View)) {
-	if handler != nil {
-		handler(v)
-	}
 }
 
 // preserveScrollAnchor keeps the content under a scrolled-up view still when
@@ -680,10 +671,14 @@ func (v *View) notifyScroll(handler func(*View)) {
 // oldest retained line. At offset 0 the view is live and must keep following
 // the output.
 func (v *View) preserveScrollAnchor(added int) {
-	if added == 0 || v.scrollOffsetValue() == 0 {
+	if added > 0 && v.scrollOffsetValue() > 0 {
+		v.addScrollOffset(added)
 		return
 	}
-	v.setScrollOffset(v.scrollOffsetValue() + added)
+	// Not following the output, but the buffer may have shrunk underneath the
+	// offset — the alternate screen clears the scrollback. Re-clamping keeps the
+	// pane from reporting a position in history that no longer exists.
+	v.clampScrollOffset()
 }
 
 // scrollOffsetValue reads the current scroll offset.
