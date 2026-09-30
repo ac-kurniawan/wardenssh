@@ -11,18 +11,26 @@ import (
 // terminalView wraps a tvxterm.View with the WardenSSH terminal interaction
 // model:
 //
-//   - mouse-wheel over the view scrolls the local scrollback (never forwarded
-//     to the remote app, which would interpret it as arrow-key navigation);
+//   - the mouse wheel follows the remote app's own modes: when the app enabled
+//     mouse reporting (vim "set mouse=a", htop, tmux) the wheel is forwarded as
+//     a mouse sequence so the app scrolls itself; on the alternate screen with
+//     no mouse reporting (less, man) each tick becomes three arrow presses; at
+//     a plain shell it scrolls the pane's local scrollback;
 //   - primary-button click-hold-drag selects text locally and copies it to the
-//     OS clipboard on release.
+//     OS clipboard on release, in every mode;
+//   - Shift+PgUp/PgDn/Home/End scroll the pane's local scrollback and are not
+//     sent to the remote.
 //
-// All other mouse events are delegated to the embedded view unchanged, so
-// remote mouse-reporting apps (tmux/vim/less) still receive clicks and the
+// All other mouse events are delegated to the embedded view unchanged, so the
 // built-in scrollbar keeps working.
 type terminalView struct {
 	*tvxterm.View
 	dragging             bool // a primary-button selection drag is in progress
 	lastDragX, lastDragY int
+
+	// titleBase is the title the session chrome assigned; the scroll marker is
+	// appended to a copy, so a chrome rewrite always restores the marker.
+	titleBase string
 }
 
 // Dragging reports whether a primary-button text selection is in progress.
@@ -37,16 +45,44 @@ func (s *terminalView) Dragging() bool {
 // used for focus handling; it may be nil for tests.
 func newTerminalView(app *tview.Application, title string) *terminalView {
 	term := &terminalView{View: tvxterm.New(app)}
-	term.SetBorder(true).SetTitle(fmt.Sprintf(" %s ", title))
+	term.SetBorder(true)
 	term.SetScrollbar(true)
+	// The widget notifies on every scroll change (wheel, keys, scrollbar,
+	// output advancing an anchored view, input snapping back), so the title
+	// marker is refreshed from one place instead of at each call site.
+	term.SetScrollHandler(func(*tvxterm.View) { term.applyTitle() })
+	term.SetTerminalTitle(title)
 	return term
+}
+
+// SetTerminalTitle records the session chrome's title and applies it together
+// with the current scroll marker. The chrome rewrites the title on every uptime
+// tick, so the marker cannot be stored in the view's title alone.
+func (s *terminalView) SetTerminalTitle(title string) {
+	s.titleBase = title
+	s.applyTitle()
+}
+
+// TitleBase returns the title without the scroll marker.
+func (s *terminalView) TitleBase() string { return s.titleBase }
+
+// applyTitle writes the base title plus, when the view is scrolled up, how many
+// lines above the live output it is showing.
+func (s *terminalView) applyTitle() {
+	title := s.titleBase
+	if offset, _ := s.ScrollbackStatus(); offset > 0 {
+		title = fmt.Sprintf("%s [↑ %d]", title, offset)
+	}
+	s.SetTitle(" " + title + " ")
 }
 
 // MouseHandler routes mouse events for the terminal:
 //
-//   - wheel -> local scrollback scrolling; during a selection drag the wheel
-//     also extends the highlight into the newly revealed lines instead of
-//     clearing it;
+//   - wheel -> the remote app's own scrollback when it owns the mouse (mouse
+//     reporting on), arrow keys when it is a full-screen app without mouse
+//     reporting, and the pane's local scrollback at a plain shell. During a
+//     selection drag the wheel always stays local and extends the highlight
+//     into the newly revealed lines instead of clearing it;
 //   - primary-button drag -> local text selection (copied to the clipboard on
 //     release). Dragging past the top or bottom edge scrolls the local
 //     scrollback. During a drag the view captures subsequent mouse events so
@@ -115,10 +151,10 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 
 		switch action {
 		case tview.MouseScrollUp:
-			s.scrollLocal(setFocus, -1)
+			s.handleWheel(action, event, setFocus, -1)
 			return true, nil
 		case tview.MouseScrollDown:
-			s.scrollLocal(setFocus, 1)
+			s.handleWheel(action, event, setFocus, 1)
 			return true, nil
 		case tview.MouseLeftDown:
 			if s.onScrollbarColumn(x, y) {
@@ -137,13 +173,33 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 	}
 }
 
-// scrollLocal scrolls the pane's own scrollback. dir < 0 moves toward older
-// lines. An already-focused view is not refocused: Focus() reports focus-in
-// to the remote, and that input path resets the scroll offset.
-func (s *terminalView) scrollLocal(setFocus func(p tview.Primitive), dir int) {
+// handleWheel routes one wheel tick by the remote app's own terminal modes:
+// mouse-owning apps get the event, full-screen apps without mouse reporting get
+// arrow keys, and a plain shell gets the pane's local scrollback. dir < 0 means
+// wheel-up (scrolling toward older content).
+func (s *terminalView) handleWheel(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive), dir int) {
 	if !s.HasFocus() {
 		setFocus(s)
 	}
+	if s.RemoteMouseReporting() {
+		// vim/htop/tmux scroll themselves; forwarding keeps their own
+		// scrollback authoritative.
+		s.ForwardMouse(action, event)
+		return
+	}
+	if s.UsingAltScreen() {
+		// less/man/vim without mouse support expect the arrow keys the wheel
+		// maps to in every terminal emulator that has no scrollback here.
+		s.SendArrowTicks(dir)
+		return
+	}
+	s.scrollLocal(dir)
+}
+
+// scrollLocal scrolls the pane's own scrollback. dir < 0 moves toward older
+// lines. An already-focused view is not refocused: Focus() reports focus-in
+// to the remote, and that input path resets the scroll offset.
+func (s *terminalView) scrollLocal(dir int) {
 	if dir < 0 {
 		s.ScrollbackUp(3)
 		return
@@ -154,8 +210,11 @@ func (s *terminalView) scrollLocal(setFocus func(p tview.Primitive), dir int) {
 // scrollSelection scrolls during a held selection and re-anchors the highlight
 // on the pointer so the newly revealed lines join the selection.
 func (s *terminalView) scrollSelection(setFocus func(p tview.Primitive), dir int) {
+	if !s.HasFocus() {
+		setFocus(s)
+	}
 	before, _ := s.ScrollbackStatus()
-	s.scrollLocal(setFocus, dir)
+	s.scrollLocal(dir)
 	after, _ := s.ScrollbackStatus()
 	x, y := s.lastDragX, s.lastDragY
 	_, iy, _, ih := s.GetInnerRect()

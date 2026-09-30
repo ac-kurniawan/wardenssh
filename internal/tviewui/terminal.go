@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -357,14 +358,20 @@ func formatUptime(up time.Duration) string {
 	}
 }
 
-// ActiveTitle returns the title of the displayed session (used in tests).
+// ActiveTitle returns the title of the displayed session, including the scroll
+// marker when the view is scrolled up (used in tests).
 func (p *TerminalPane) ActiveTitle() string {
 	p.mu.Lock()
 	var title string
+	var view tview.Primitive
 	if s, ok := p.sessions[p.active]; ok {
 		title = s.viewTitle
+		view = s.view
 	}
 	p.mu.Unlock()
+	if b, ok := view.(*terminalView); ok {
+		return strings.TrimSuffix(strings.TrimPrefix(b.GetTitle(), " "), " ")
+	}
 	return title
 }
 
@@ -446,7 +453,10 @@ func (p *TerminalPane) setSessionTitle(key string, focused bool) {
 	p.mu.Unlock()
 
 	if b, ok := view.(*terminalView); ok {
-		b.SetTitle(" " + title + " ")
+		// The view owns the scroll marker: it appends one when scrolled up and
+		// restores the plain title at the bottom, so a chrome rewrite here
+		// cannot silently drop it.
+		b.SetTerminalTitle(title)
 	}
 }
 
