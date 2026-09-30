@@ -1,6 +1,7 @@
 package tvxterm
 
 import (
+	"io"
 	"strings"
 	"testing"
 )
@@ -10,14 +11,14 @@ func rowString(row []Cell) string {
 	return strings.TrimRight(cellsToString(row), " ")
 }
 
-// pipeBackend hands every chunk handed to Feed to the emulator, and records
-// writes. Unlike stubBackend it never blocks in Read, so Feed/Pending can be
-// driven without a goroutine.
+// pipeBackend records writes on behalf of tests that drive the view through
+// Feed. Read returns io.EOF so a read loop started by Attach exits instead of
+// spinning: the tests do not feed output through the backend at all.
 type pipeBackend struct {
 	writes [][]byte
 }
 
-func (b *pipeBackend) Read(p []byte) (int, error) { return 0, nil }
+func (b *pipeBackend) Read(p []byte) (int, error) { return 0, io.EOF }
 
 func (b *pipeBackend) Write(p []byte) (int, error) {
 	b.writes = append(b.writes, append([]byte(nil), p...))

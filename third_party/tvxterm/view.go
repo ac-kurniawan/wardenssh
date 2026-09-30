@@ -671,14 +671,30 @@ func (v *View) setScrollOffset(offset int) {
 // oldest retained line. At offset 0 the view is live and must keep following
 // the output.
 func (v *View) preserveScrollAnchor(added int) {
-	if added > 0 && v.scrollOffsetValue() > 0 {
-		v.addScrollOffset(added)
-		return
+	// The read, the decision and the write all run under one lock hold. Testing
+	// the offset first and adjusting it afterwards would let a wheel or key
+	// scroll land in between, so the anchor would overwrite the user's scroll
+	// with a value derived from the position it replaced.
+	//
+	// A view that is following the output (offset 0) stays there. Otherwise the
+	// offset advances by the rows added, which keeps the content under the
+	// reader still; the clamp also pulls a stale offset back in range when the
+	// scrollback shrinks underneath it, as the alternate screen does.
+	_, _, scrollbackRows := v.emu.Dimensions()
+	v.mu.Lock()
+	next := v.scrollOffset
+	if next > 0 {
+		// Anchored in history: advance by the rows added so the content under
+		// the reader stays still. The clamp also pulls the offset back in range
+		// when the scrollback shrinks underneath it.
+		next = clamp(next+added, 0, scrollbackRows)
 	}
-	// Not following the output, but the buffer may have shrunk underneath the
-	// offset — the alternate screen clears the scrollback. Re-clamping keeps the
-	// pane from reporting a position in history that no longer exists.
-	v.clampScrollOffset()
+	changed := next != v.scrollOffset
+	v.scrollOffset = next
+	v.mu.Unlock()
+	if changed {
+		v.requestRedraw()
+	}
 }
 
 // scrollOffsetValue reads the current scroll offset.
