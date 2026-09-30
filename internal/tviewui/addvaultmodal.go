@@ -48,7 +48,7 @@ func NewAddVaultModal(existing []config.Vault, cf config.CustomFields, hl *hosts
 	m.buildForm()
 	m.modal = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(nil, 0, 1, false).
-		AddItem(m.form, 10, 0, true).
+		AddItem(m.form, 14, 0, true).
 		AddItem(nil, 0, 1, false)
 	return m
 }
@@ -67,23 +67,38 @@ func (m *AddVaultModal) buildForm() {
 	m.form.AddButton("Cancel", func() { m.Cancel() })
 	m.form.SetCancelFunc(func() { m.Cancel() })
 	m.form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEnter && !m.busy {
+		if event.Key() != tcell.KeyEnter || m.isBusy() {
+			return event
+		}
+		itemIdx, _ := m.form.GetFocusedItemIndex()
+		if itemIdx == 3 {
 			m.Submit()
 			return nil
 		}
+		// Preserve Form's normal Enter navigation through Name, Server, and
+		// Email. Enter submits only from the Password field.
 		return event
 	})
 }
 
 func (m *AddVaultModal) updateTitle() {
+	m.mu.Lock()
+	busy, errMsg := m.busy, m.errMsg
+	m.mu.Unlock()
 	switch {
-	case m.busy:
+	case busy:
 		m.form.SetTitle(" Adding vault… ")
-	case m.errMsg != "":
-		m.form.SetTitle(fmt.Sprintf(" Add Vault [red](%s)[-] ", m.errMsg))
+	case errMsg != "":
+		m.form.SetTitle(fmt.Sprintf(" Add Vault [red](%s)[-] ", errMsg))
 	default:
 		m.form.SetTitle(" Add Vault ")
 	}
+}
+
+func (m *AddVaultModal) isBusy() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.busy
 }
 
 // Primitive returns the tview primitive for layout embedding.
@@ -174,25 +189,25 @@ func (m *AddVaultModal) Submit() {
 	m.mu.Unlock()
 
 	if err := config.ValidateVaultName(name); err != nil {
-		m.fail(err.Error())
+		m.failInline(err.Error())
 		return
 	}
 	for _, v := range m.existing {
 		if v.Name == name {
-			m.fail(fmt.Sprintf("vault %q is already configured", name))
+			m.failInline(fmt.Sprintf("vault %q is already configured", name))
 			return
 		}
 	}
 	if server == "" || !strings.HasPrefix(server, "http://") && !strings.HasPrefix(server, "https://") {
-		m.fail("server must be an http(s) URL")
+		m.failInline("server must be an http(s) URL")
 		return
 	}
 	if email == "" || !strings.Contains(email, "@") {
-		m.fail("email is required")
+		m.failInline("email is required")
 		return
 	}
 	if pass == "" {
-		m.fail("master password is required")
+		m.failInline("master password is required")
 		return
 	}
 
@@ -200,10 +215,8 @@ func (m *AddVaultModal) Submit() {
 	m.busy = true
 	m.errMsg = ""
 	m.mu.Unlock()
-	m.redraw(func() {
-		m.setFormLocked(true)
-		m.updateTitle()
-	})
+	m.setFormLocked(true)
+	m.updateTitle()
 
 	cf := m.customFields
 	go func() {
@@ -259,14 +272,26 @@ func (m *AddVaultModal) fail(msg string) {
 	})
 }
 
+// failInline updates a validation error synchronously from the UI event loop.
+func (m *AddVaultModal) failInline(msg string) {
+	m.mu.Lock()
+	m.busy = false
+	m.errMsg = msg
+	m.mu.Unlock()
+	m.setFormLocked(false)
+	m.updateTitle()
+}
+
 // ShowError records a user-visible error after the modal handed control back
-// to the caller (e.g. AddSource/config persistence failed in the wiring) and
-// unlocks the form for retry.
+// to the caller (e.g. AddSource/config persistence failed in the wiring).
 func (m *AddVaultModal) ShowError(msg string) {
 	m.mu.Lock()
 	m.done = false
+	m.busy = false
+	m.errMsg = msg
 	m.mu.Unlock()
-	m.fail(msg)
+	m.setFormLocked(false)
+	m.updateTitle()
 }
 
 // redraw runs fn on the tview event loop when an application is attached
