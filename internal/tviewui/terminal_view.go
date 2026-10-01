@@ -67,6 +67,37 @@ func newTerminalView(app *tview.Application, title string) *terminalView {
 	return term
 }
 
+// NewTerminalViewForTest returns a WardenSSH terminal view (capture tool and
+// tests). title is the session chrome shown in the border.
+func NewTerminalViewForTest(app *tview.Application, title string) tview.Primitive {
+	return newTerminalView(app, title)
+}
+
+// FeedTerminalForTest feeds transcript into a view from NewTerminalViewForTest.
+// View.Feed drops bytes unless a backend is attached, and Attach starts a read
+// loop, so the backend's Read blocks forever. Lay the view out first: Draw
+// resizes the emulator and drops bytes fed at another size.
+func FeedTerminalForTest(view tview.Primitive, transcript string) {
+	tv, ok := view.(*terminalView)
+	if !ok {
+		return
+	}
+	tv.SetScrollbar(false)
+	tv.Attach(captureBackend{})
+	tv.Feed([]byte(transcript))
+}
+
+// captureBackend lets FeedTerminalForTest deliver a transcript. Read blocks so
+// the loop Attach starts never observes EOF and never stops the application.
+type captureBackend struct{}
+
+func (captureBackend) Read([]byte) (int, error)    { select {} }
+func (captureBackend) Write(p []byte) (int, error) { return len(p), nil }
+func (captureBackend) Resize(int, int) error       { return nil }
+func (captureBackend) Close() error                { return nil }
+
+var _ tvxterm.Backend = captureBackend{}
+
 // SetTerminalTitle records the session chrome's title. The scroll marker is
 // added when the title is rendered, so a chrome rewrite cannot drop it.
 func (s *terminalView) SetTerminalTitle(title string) {
