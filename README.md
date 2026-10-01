@@ -13,6 +13,17 @@
 
 The core security guarantee of WardenSSH is **Zero-Disk-Footprint**: private keys stored in Bitwarden/Vaultwarden are **never written to disk**. Keys are decrypted strictly in RAM at rest and served directly to `ssh` via an **in-process SSH agent**.
 
+
+<p align="center">
+  <img src="docs/screenshots/host-list.png" alt="WardenSSH host list" width="900">
+</p>
+<p align="center">
+  <img src="docs/screenshots/session.png" alt="WardenSSH with one live SSH session" width="900">
+</p>
+<p align="center">
+  <img src="docs/screenshots/sessions.png" alt="WardenSSH with a background session and the active session" width="900">
+</p>
+
 ---
 
 ## ✨ Features
