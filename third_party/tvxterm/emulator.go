@@ -64,6 +64,11 @@ type Emulator struct {
 	usingAlt        bool
 	savedPrimary    *screenState
 	hasScrollRegion bool
+
+	// Monotonic totals for the scrollback, so a scrolled-up viewer can track
+	// how far the buffer moved under it. See ScrollbackCounters.
+	scrollbackAdded   int
+	scrollbackRemoved int
 }
 
 type screenState struct {
@@ -1437,10 +1442,35 @@ func (e *Emulator) pushScrollbackRow(row []Cell) {
 	copied := make([]Cell, len(row))
 	copy(copied, row)
 	e.scrollback = append(e.scrollback, copied)
+	e.scrollbackAdded++
 	if e.maxScrollback > 0 && len(e.scrollback) > e.maxScrollback {
 		extra := len(e.scrollback) - e.maxScrollback
 		e.scrollback = e.scrollback[extra:]
+		e.scrollbackRemoved += extra
 	}
+}
+
+// ScrollbackCounters returns monotonic counts of rows ever added to and dropped
+// from the scrollback. A viewer scrolled into history uses the delta across a
+// write to keep the content under the reader still: the offset is anchored to
+// the bottom, so it has to track both kinds of movement.
+func (e *Emulator) ScrollbackCounters() (added, removed int) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.scrollbackAdded, e.scrollbackRemoved
+}
+
+// ScrollbackRows returns a copy of the retained scrollback, oldest first.
+func (e *Emulator) ScrollbackRows() [][]Cell {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([][]Cell, len(e.scrollback))
+	for i, row := range e.scrollback {
+		copied := make([]Cell, len(row))
+		copy(copied, row)
+		out[i] = copied
+	}
+	return out
 }
 
 func (e *Emulator) resetStyle() {

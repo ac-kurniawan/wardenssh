@@ -1,7 +1,9 @@
 package tviewui
 
 import (
+	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -75,17 +77,37 @@ func waitScrollback(t *testing.T, view *terminalView) {
 // (vim/tmux/less/htop) would.
 const mouseEnable = "\x1b[?1000h\x1b[?1006h"
 
-// fedView builds a terminal view with the WardenSSH interaction wiring, a rect
-// (inner area 10x3), and fed output. Exactly 26 lines are written so the first
-// three lines sit in scrollback and the visible rows start at
-// "abcdefghij", "klmnopqrst", "uvwxyzabcd". It returns the view and the
-// recording backend.
-func fedView(t *testing.T) (*terminalView, *testBackend) {
+// altScreenEnable switches to the alternate screen buffer the way a
+// full-screen app (vim, less, man) does. The emulator keeps no scrollback
+// there, so the pane has nothing local to scroll.
+const altScreenEnable = "\x1b[?1049h"
+
+// scrollTestView builds a terminal view with 60 lines of output and a fixed
+// set of remote terminal modes, then waits until the output has been consumed.
+// inner mode values:
+//   - "": plain shell (primary screen, no mouse reporting)
+//   - "mouse": mouse reporting on (vim "set mouse=a")
+//   - "alt": alternate screen, no mouse reporting (less/man, vim "set mouse=")
+//   - "alt+mouse": both (vim "set mouse=a" on the alternate screen)
+func scrollTestView(t *testing.T, mode string) (*terminalView, *testBackend) {
 	t.Helper()
 	view := newTerminalView(nil, "host-a")
 	view.SetRect(0, 0, 12, 5)
 
-	payload := []byte(mouseEnable)
+	var prefix string
+	switch mode {
+	case "":
+	case "mouse":
+		prefix = mouseEnable
+	case "alt":
+		prefix = altScreenEnable
+	case "alt+mouse":
+		prefix = mouseEnable + altScreenEnable
+	default:
+		t.Fatalf("unknown scroll test mode %q", mode)
+	}
+
+	payload := []byte(prefix)
 	for i := 0; i < 3; i++ {
 		payload = append(payload, []byte("xxxxxxxxxx\n")...)
 	}
@@ -97,27 +119,83 @@ func fedView(t *testing.T) (*terminalView, *testBackend) {
 	}
 	backend := newTestBackend(payload)
 	view.Attach(backend)
-	waitScrollback(t, view)
+	// The alternate screen keeps no scrollback, so waiting for rows there would
+	// hang: the test only needs the mode to have been applied.
+	if strings.Contains(mode, "alt") {
+		waitForAltScreen(t, view)
+	} else {
+		waitScrollback(t, view)
+	}
 	return view, backend
 }
 
-// TestTerminalWheelScrollsLocalScrollback: the right pane (terminal) must be
-// scrollable with the mouse wheel — wheel-up/down scrolls the pane's own
-// scrollback. Wheel events must never be forwarded to the remote app as
-// mouse-reporting sequences, which the remote interprets as arrow-key
-// navigation ("acts like arrow up and down").
-func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
-	view := newTerminalView(nil, "host-a")
-	view.SetRect(0, 0, 12, 5)
-	defer view.Close()
-
-	payload := []byte(mouseEnable)
-	for i := 0; i < 60; i++ {
-		payload = append(payload, []byte("line of output\n")...)
+// waitForAltScreen polls until the view reports the remote app switched to the
+// alternate screen, which also means it has consumed the fed output.
+func waitForAltScreen(t *testing.T, view *terminalView) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if view.UsingAltScreen() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	backend := newTestBackend(payload)
-	view.Attach(backend)
-	waitScrollback(t, view)
+	t.Fatal("timed out waiting for the alternate screen")
+}
+
+// fedView is a view at a plain shell prompt, with the three known lines
+// ("abcdefghij", "klmnopqrst", "uvwxyzabcd") still in its visible rows.
+func fedView(t *testing.T) (*terminalView, *testBackend) {
+	t.Helper()
+	return scrollTestView(t, "")
+}
+
+// feed pushes output into the view synchronously, so a follow-up assertion
+// sees the resulting terminal state. It is how a test drives output that the
+// initial backend payload did not include.
+func feed(t *testing.T, view *terminalView, data string) {
+	t.Helper()
+	if !view.Feed([]byte(data)) {
+		t.Fatal("Feed: no backend attached")
+	}
+}
+
+// drainWrites discards recorded backend writes so a test can assert only on
+// what a specific action sends.
+func drainWrites(b *testBackend) {
+	b.mu.Lock()
+	b.writes = nil
+	b.mu.Unlock()
+}
+
+// sentBytes concatenates everything the view has written to the backend.
+func sentBytes(b *testBackend) string {
+	var out []byte
+	for _, w := range b.Writes() {
+		out = append(out, w...)
+	}
+	return string(out)
+}
+
+// mouseSeqs filters recorded writes down to mouse-reporting sequences
+// (SGR "\x1b[<...M/m") and returns them.
+func mouseSeqs(b *testBackend) []string {
+	var out []string
+	for _, w := range b.Writes() {
+		s := string(w)
+		if strings.HasPrefix(s, "\x1b[<") {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestTerminalWheelScrollsLocalScrollback: at a plain shell (no remote mouse
+// reporting, no alternate screen) the wheel scrolls the pane's own scrollback
+// and is never sent to the remote.
+func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
+	view, backend := fedView(t)
+	defer view.Close()
 
 	handler := view.MouseHandler()
 	setFocus := func(p tview.Primitive) {}
@@ -134,7 +212,7 @@ func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
 		t.Errorf("expected wheel-up to scroll the local scrollback, offset=%d want >0", offset)
 	}
 	if writes := backend.Writes(); len(writes) != 0 {
-		t.Errorf("wheel must not be forwarded to the remote as a mouse sequence; got %d writes: %q", len(writes), writes)
+		t.Errorf("wheel must not be forwarded to the remote at a plain shell; got %d writes: %q", len(writes), writes)
 	}
 
 	consumed, _ = handler(tview.MouseScrollDown, tcell.NewEventMouse(5, 2, 0, tcell.ModNone), setFocus)
@@ -144,6 +222,75 @@ func TestTerminalWheelScrollsLocalScrollback(t *testing.T) {
 	offsetDown, _ := view.ScrollbackStatus()
 	if offsetDown >= offset {
 		t.Errorf("expected wheel-down to scroll toward the bottom, offset %d -> %d", offset, offsetDown)
+	}
+}
+
+// TestTerminalWheelGoesToMouseReportingApp: when the remote app has turned on
+// mouse reporting (vim "set mouse=a", htop, tmux), the wheel must be forwarded
+// to the app as an SGR mouse sequence so vim scrolls its own buffer, and the
+// pane's local scrollback must not move.
+func TestTerminalWheelGoesToMouseReportingApp(t *testing.T) {
+	view, backend := scrollTestView(t, "mouse")
+	defer view.Close()
+
+	handler := view.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+
+	if consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, 0, tcell.ModNone), setFocus); !consumed {
+		t.Fatal("expected wheel-up over the terminal to be consumed")
+	}
+	seqs := mouseSeqs(backend)
+	if len(seqs) != 1 {
+		t.Fatalf("expected the wheel to be sent to the app as one mouse sequence, got %d: %q", len(seqs), seqs)
+	}
+	want := "\x1b[<64;2;2M"
+	if seqs[0] != want {
+		t.Errorf("wheel-up sequence = %q, want %q", seqs[0], want)
+	}
+	if offset, _ := view.ScrollbackStatus(); offset != 0 {
+		t.Errorf("local scrollback must not move while the app owns the mouse, offset=%d", offset)
+	}
+
+	drainWrites(backend)
+	if consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, 0, tcell.ModNone), setFocus); !consumed {
+		t.Fatal("expected wheel-down over the terminal to be consumed")
+	}
+	seqs = mouseSeqs(backend)
+	if len(seqs) != 1 {
+		t.Fatalf("expected wheel-down to be sent to the app as one mouse sequence, got %d: %q", len(seqs), seqs)
+	}
+	if want := "\x1b[<65;2;2M"; seqs[0] != want {
+		t.Errorf("wheel-down sequence = %q, want %q", seqs[0], want)
+	}
+}
+
+// TestTerminalWheelOnAltScreenSendsArrows: on the alternate screen with no
+// mouse reporting (less, man, vim "set mouse=") there is no pane history to
+// scroll, so each wheel tick must send the app Up/Down arrow keys. The
+// application must get three presses per tick, matching gnome-terminal/iTerm.
+func TestTerminalWheelOnAltScreenSendsArrows(t *testing.T) {
+	view, backend := scrollTestView(t, "alt")
+	defer view.Close()
+
+	handler := view.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+
+	if consumed, _ := handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, 0, tcell.ModNone), setFocus); !consumed {
+		t.Fatal("expected wheel-up over the terminal to be consumed")
+	}
+	if got := sentBytes(backend); got != "\x1b[A\x1b[A\x1b[A" {
+		t.Errorf("wheel-up on the alternate screen sent %q, want three Up arrows", got)
+	}
+	if offset, _ := view.ScrollbackStatus(); offset != 0 {
+		t.Errorf("alternate screen has no local scrollback, offset=%d", offset)
+	}
+
+	drainWrites(backend)
+	if consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, 0, tcell.ModNone), setFocus); !consumed {
+		t.Fatal("expected wheel-down over the terminal to be consumed")
+	}
+	if got := sentBytes(backend); got != "\x1b[B\x1b[B\x1b[B" {
+		t.Errorf("wheel-down on the alternate screen sent %q, want three Down arrows", got)
 	}
 }
 
@@ -578,4 +725,269 @@ func TestAppWheelDuringDragKeepsSelection(t *testing.T) {
 	if offset <= 0 {
 		t.Errorf("wheel during a drag must scroll the local scrollback, offset=%d", offset)
 	}
+}
+
+// TestTerminalTitleShowsScrollPosition: while scrolled up the pane title must
+// say so, with the number of lines above the live output. The session chrome
+// rewrites the title on its 1s tick, so the marker has to be part of the title
+// the view owns rather than a one-shot SetTitle.
+func TestTerminalTitleShowsScrollPosition(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	base := view.TerminalTitle()
+	if base != "host-a" {
+		t.Fatalf("precondition: unexpected base title %q", base)
+	}
+	if strings.Contains(base, "↑") {
+		t.Fatalf("expected no scroll marker at the bottom, got %q", base)
+	}
+
+	view.ScrollbackUp(4)
+	offset, _ := view.ScrollbackStatus()
+	if offset == 0 {
+		t.Fatal("precondition: expected the view to be scrolled up")
+	}
+	want := fmt.Sprintf("[↑ %d]", offset)
+	if got := view.TerminalTitle(); !strings.Contains(got, want) {
+		t.Fatalf("scrolled title = %q, want it to contain %q", got, want)
+	}
+
+	view.ScrollbackDown(offset)
+	if got := view.TerminalTitle(); strings.Contains(got, "↑") {
+		t.Fatalf("title after returning to the bottom = %q, want no scroll marker", got)
+	}
+}
+
+// TestTerminalTitleMarkerSurvivesSessionChrome: the pane's session chrome sets
+// the full title (uptime, ping, state) and must keep the scroll marker, or the
+// marker would vanish on the next uptime tick.
+func TestTerminalTitleMarkerSurvivesSessionChrome(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	pane := NewTerminalPane(nil)
+	defer pane.Close()
+	key := SessionKey("host-a", "file")
+	pane.SetSessionForTest(key, "host-a", "file")
+	pane.SetSessionViewForTest(key, view)
+	pane.Activate(key)
+
+	view.ScrollbackUp(7)
+	offset, _ := view.ScrollbackStatus()
+	if offset == 0 {
+		t.Fatal("precondition: expected the view to be scrolled up")
+	}
+	want := fmt.Sprintf("[↑ %d]", offset)
+	pane.SetSessionTitleState(true)
+
+	if got := view.TerminalTitle(); !strings.Contains(got, want) {
+		t.Fatalf("title after the chrome rewrite = %q, want it to still contain %q", got, want)
+	}
+	if got := pane.ActiveTitle(); !strings.Contains(got, want) {
+		t.Fatalf("ActiveTitle() = %q, want it to report the scroll marker", got)
+	}
+}
+
+// TestTerminalScrollKeysScrollLocally: Shift+PgUp/PgDn/Home/End move the pane's
+// own history and must not reach the remote app. These are the keyboard
+// equivalents of the wheel.
+func TestTerminalScrollKeysScrollLocally(t *testing.T) {
+	view, backend := fedView(t)
+	defer view.Close()
+
+	view.SendKey(tcell.NewEventKey(tcell.KeyPgUp, 0, tcell.ModShift))
+	offset, _ := view.ScrollbackStatus()
+	if offset <= 0 {
+		t.Fatalf("expected Shift+PgUp to scroll the local scrollback, offset=%d", offset)
+	}
+	view.SendKey(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModShift))
+	top, rows := view.ScrollbackStatus()
+	if top != rows {
+		t.Fatalf("expected Shift+Home to jump to the oldest line, offset=%d rows=%d", top, rows)
+	}
+	view.SendKey(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModShift))
+	if offset, _ := view.ScrollbackStatus(); offset != 0 {
+		t.Fatalf("expected Shift+End to return to the bottom, offset=%d", offset)
+	}
+	if writes := backend.Writes(); len(writes) != 0 {
+		t.Fatalf("scroll keys must not reach the remote, got %d writes: %q", len(writes), writes)
+	}
+}
+
+// TestTerminalPlainKeysResetScroll: a key the remote receives means the user is
+// typing again, so the view returns to the live output.
+func TestTerminalPlainKeysResetScroll(t *testing.T) {
+	view, backend := fedView(t)
+	defer view.Close()
+
+	view.ScrollbackUp(5)
+	if offset, _ := view.ScrollbackStatus(); offset == 0 {
+		t.Fatal("precondition: expected a scrolled view")
+	}
+	view.SendKey(tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone))
+	if offset, _ := view.ScrollbackStatus(); offset != 0 {
+		t.Fatalf("expected a forwarded key to snap the view back to the bottom, offset=%d", offset)
+	}
+	if writes := backend.Writes(); len(writes) == 0 {
+		t.Fatal("precondition: expected the key to reach the remote")
+	}
+}
+
+// TestTerminalWheelDuringDragOnMouseAppKeepsSelection: on an app that owns the
+// mouse, a wheel tick with a selection drag held still extends the local
+// selection rather than being forwarded, so a drag in progress is never
+// interrupted by its own scrolling.
+func TestTerminalWheelDuringDragOnMouseAppKeepsSelection(t *testing.T) {
+	view, backend := scrollTestView(t, "mouse")
+	defer view.Close()
+	drawTerminal(t, view)
+
+	handler := view.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+
+	handler(tview.MouseLeftDown, tcell.NewEventMouse(1, 1, tcell.Button1, tcell.ModNone), setFocus)
+	handler(tview.MouseMove, tcell.NewEventMouse(5, 2, tcell.Button1, tcell.ModNone), setFocus)
+	if !view.HasSelection() {
+		t.Fatal("precondition: expected a selection after the drag")
+	}
+	before := len(mouseSeqs(backend))
+
+	handler(tview.MouseScrollUp, tcell.NewEventMouse(5, 2, tcell.Button1, tcell.ModNone), setFocus)
+	if !view.HasSelection() {
+		t.Fatal("wheel during a drag must not clear the selection")
+	}
+	if after := len(mouseSeqs(backend)); after != before {
+		t.Fatalf("wheel during a selection drag must stay local, got %d new mouse sequences", after-before)
+	}
+}
+
+// TestTerminalTitleMarkerTracksNewOutput: while scrolled up, new output pushes
+// the view deeper into history (the anchor keeps the content still). The marker
+// must follow, or it would report a stale distance.
+func TestTerminalTitleMarkerTracksNewOutput(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	view.ScrollbackUp(4)
+	before, _ := view.ScrollbackStatus()
+	if before == 0 {
+		t.Fatal("precondition: expected the view to be scrolled up")
+	}
+
+	feed(t, view, "more output\nmore output\n")
+	after, _ := view.ScrollbackStatus()
+	if after == before {
+		t.Fatalf("precondition: expected the anchor to push the view deeper, still %d", after)
+	}
+	if got := view.TerminalTitle(); !strings.Contains(got, fmt.Sprintf("[↑ %d]", after)) {
+		t.Fatalf("title after new output = %q, want it to report %d lines above live", got, after)
+	}
+}
+
+// TestTerminalTitleMarkerClearsOnTyping: a key forwarded to the remote snaps the
+// view back to the live output, so the marker must go with it.
+func TestTerminalTitleMarkerClearsOnTyping(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	view.ScrollbackUp(4)
+	if got := view.TerminalTitle(); !strings.Contains(got, "↑") {
+		t.Fatalf("precondition: expected a scroll marker, got %q", got)
+	}
+
+	view.SendKey(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	if got := view.TerminalTitle(); strings.Contains(got, "↑") {
+		t.Fatalf("title after typing = %q, want no scroll marker", got)
+	}
+}
+
+// TestTerminalNoPhantomMarkerOnAltScreen: when the remote app switches to the
+// alternate screen while the pane is scrolled up, the emulator drops the
+// scrollback. A stale offset would leave the title claiming "[↑ N]" over a live
+// full-screen app, so the marker must disappear with the history it measured.
+func TestTerminalNoPhantomMarkerOnAltScreen(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+
+	view.ScrollbackUp(5)
+	if offset, rows := view.ScrollbackStatus(); offset == 0 || rows == 0 {
+		t.Fatalf("precondition: expected a scrolled view with history, offset=%d rows=%d", offset, rows)
+	}
+
+	feed(t, view, altScreenEnable)
+
+	offset, rows := view.ScrollbackStatus()
+	if rows != 0 {
+		t.Fatalf("precondition: the alternate screen should have no history, rows=%d", rows)
+	}
+	if offset != 0 {
+		t.Errorf("alternate screen kept a stale scroll offset %d with no history", offset)
+	}
+	if got := view.TerminalTitle(); strings.Contains(got, "↑") {
+		t.Errorf("title over a live full-screen app = %q, want no scroll marker", got)
+	}
+	if start := firstVisibleRowOf(view); start != 0 {
+		t.Errorf("expected the live screen to be shown, first visible row=%d", start)
+	}
+}
+
+// TestTerminalDrawnTitleShowsMarker: the marker has to reach the border the user
+// reads, not just the accessor. Rendering the pane into a simulation screen and
+// reading the title row is what pins the visible contract.
+func TestTerminalDrawnTitleShowsMarker(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+	// The 12-cell fixture is too narrow for a title; use a realistic pane width.
+	view.SetRect(0, 0, 80, 6)
+
+	if got := drawnTitle(t, view); !strings.Contains(got, "host-a") || strings.Contains(got, "↑") {
+		t.Fatalf("drawn title at the bottom = %q, want the plain session title", got)
+	}
+
+	view.ScrollbackUp(4)
+	offset, _ := view.ScrollbackStatus()
+	want := fmt.Sprintf("[↑ %d]", offset)
+	if got := drawnTitle(t, view); !strings.Contains(got, want) {
+		t.Fatalf("drawn title while scrolled = %q, want it to contain %q", got, want)
+	}
+
+	view.ScrollbackBottom()
+	if got := drawnTitle(t, view); strings.Contains(got, "↑") {
+		t.Fatalf("drawn title after returning to the bottom = %q, want no marker", got)
+	}
+}
+
+// drawnTitle renders the view and returns the text of its top border row, which
+// is where tview draws the title.
+func drawnTitle(t *testing.T, view *terminalView) string {
+	t.Helper()
+	x, y, width, _ := view.GetRect()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("init simulation screen: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(width+x, y+6)
+	view.Draw(screen)
+
+	var b strings.Builder
+	for col := 0; col < width; col++ {
+		ch, _, _, _ := screen.GetContent(x+col, y)
+		if ch == 0 {
+			ch = ' '
+		}
+		b.WriteRune(ch)
+	}
+	return b.String()
+}
+
+// firstVisibleRowOf is the wrapper-level counterpart of firstVisibleRow: with no
+// retained history the live screen starts at row 0, which is all this test needs.
+func firstVisibleRowOf(v *terminalView) int {
+	offset, rows := v.ScrollbackStatus()
+	if rows == 0 {
+		return 0
+	}
+	return max(0, rows-offset)
 }

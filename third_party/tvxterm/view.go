@@ -33,15 +33,15 @@ type View struct {
 	// screen rendering, so a slow frame cannot stall the backend read loop.
 	emu *Emulator
 
-	mu            sync.RWMutex // guards backend/debug/handlers/closed/scrollOffset/scrollbar/lastTitle/lastBackend*
-	backend       Backend
-	debug         *os.File
-	onBackendExit func(*View, error)
-	onTitle       func(*View, string)
-	focused       bool
-	closed        bool
-	scrollOffset  int
-	scrollbar     bool
+	mu              sync.RWMutex // guards backend/debug/handlers/closed/scrollOffset/scrollbar/lastTitle/lastBackend*
+	backend         Backend
+	debug           *os.File
+	onBackendExit   func(*View, error)
+	onTitle         func(*View, string)
+	focused         bool
+	closed          bool
+	scrollOffset    int
+	scrollbar       bool
 	lastTitle       string
 	lastBackendCols int
 	lastBackendRows int
@@ -208,6 +208,12 @@ func (v *View) Draw(screen tcell.Screen) {
 
 func (v *View) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return v.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		// Shift+PgUp/PgDn/Home/End belong to the pane, not the remote app:
+		// they move the local scrollback and must not be forwarded.
+		if v.handleScrollKey(event) {
+			return
+		}
+
 		v.mu.RLock()
 		backend := v.backend
 		v.mu.RUnlock()
@@ -244,10 +250,14 @@ func (v *View) PasteHandler() func(text string, setFocus func(p tview.Primitive)
 }
 
 // SendKey writes a single key event to the attached backend using the same
-// encoding rules as interactive input handling.
+// encoding rules as interactive input handling. Shift+PgUp/PgDn/Home/End are
+// the pane's own history keys and move the view without reaching the remote.
 func (v *View) SendKey(event *tcell.EventKey) bool {
 	if event == nil {
 		return false
+	}
+	if v.handleScrollKey(event) {
+		return true
 	}
 
 	v.mu.RLock()
@@ -266,28 +276,61 @@ func (v *View) SendKey(event *tcell.EventKey) bool {
 	return true
 }
 
-// SendPaste writes pasted text to the attached backend, preserving bracketed
-// paste behavior when enabled by the remote terminal.
-func (v *View) SendPaste(text string) bool {
-	if text == "" {
+// handleScrollKey routes the pane's own scrollback keys: Shift+PgUp/PgDn for a
+// page and Shift+Home/End for the oldest line and the live screen. It reports
+// whether the event was one of them, so callers know not to forward it.
+func (v *View) handleScrollKey(event *tcell.EventKey) bool {
+	if event.Modifiers()&tcell.ModShift == 0 {
 		return false
 	}
+	switch event.Key() {
+	case tcell.KeyPgUp:
+		v.ScrollbackPageUp()
+	case tcell.KeyPgDn:
+		v.ScrollbackPageDown()
+	case tcell.KeyHome:
+		v.ScrollbackTop()
+	case tcell.KeyEnd:
+		v.ScrollbackBottom()
+	default:
+		return false
+	}
+	return true
+}
 
+// ForwardMouse sends a mouse event to the remote app as a mouse-reporting
+// sequence, encoding it the way the app's current modes require. It reports
+// whether the event was sent; apps that have not enabled mouse reporting do not
+// receive mouse events at all.
+func (v *View) ForwardMouse(action tview.MouseAction, event *tcell.EventMouse) bool {
 	v.mu.RLock()
 	backend := v.backend
 	v.mu.RUnlock()
-	if backend == nil {
+	if backend == nil || event == nil {
 		return false
 	}
 
+	x, y, _, _ := v.GetInnerRect()
 	ss := v.emu.Snapshot()
-	payload := []byte(text)
-	if ss.BracketedPaste {
-		payload = append([]byte("\x1b[200~"), payload...)
-		payload = append(payload, []byte("\x1b[201~")...)
+	seq, ok := mouseEventToBytes(action, event, ss, x, y)
+	if !ok {
+		return false
 	}
-	v.sendInput(backend, payload)
+	v.sendInput(backend, seq)
 	return true
+}
+
+// SendArrowTicks sends `ticks` arrow-key presses to the remote app, the way a
+// terminal emulator maps the wheel on the alternate screen where it has no
+// scrollback of its own. dir < 0 is Up.
+func (v *View) SendArrowTicks(dir int) {
+	key := tcell.KeyDown
+	if dir < 0 {
+		key = tcell.KeyUp
+	}
+	for range 3 {
+		v.SendKey(tcell.NewEventKey(key, 0, tcell.ModNone))
+	}
 }
 
 // StartSelection begins a local text selection using screen coordinates.
@@ -444,19 +487,47 @@ func (v *View) MouseHandler() func(action tview.MouseAction, event *tcell.EventM
 	})
 }
 
+// Feed delivers terminal output to the view synchronously: the bytes are
+// applied to the emulator, any terminal responses are written back to the
+// backend, and a redraw is requested — all before Feed returns.
+//
+// This is the same path readLoop takes for backend output, factored out so
+// that a caller holding a stream it produced itself (a replay, a transcript
+// reader, a test) does not have to route bytes through a Backend. Feed
+// reports false when no backend is attached, since there is nothing to write
+// the terminal's replies to.
+func (v *View) Feed(p []byte) bool {
+	if len(p) == 0 {
+		return false
+	}
+
+	v.mu.RLock()
+	backend := v.backend
+	closed := v.closed
+	v.mu.RUnlock()
+	if backend == nil || closed {
+		return false
+	}
+	addedBefore, _ := v.emu.ScrollbackCounters()
+	v.logBytes("output", p)
+	_, _ = v.emu.Write(p)
+	addedAfter, _ := v.emu.ScrollbackCounters()
+	v.preserveScrollAnchor(addedAfter - addedBefore)
+	v.syncTitle()
+	for _, resp := range v.emu.DrainResponses() {
+		v.logBytes("input", resp)
+		_ = writeAll(backend, resp)
+	}
+	v.requestRedraw()
+	return true
+}
+
 func (v *View) readLoop(backend Backend) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := backend.Read(buf)
 		if n > 0 {
-			v.logBytes("output", buf[:n])
-			_, _ = v.emu.Write(buf[:n])
-			v.syncTitle()
-			for _, resp := range v.emu.DrainResponses() {
-				v.logBytes("input", resp)
-				_ = writeAll(backend, resp)
-			}
-			v.requestRedraw()
+			v.Feed(buf[:n])
 		}
 		if err != nil {
 			v.mu.RLock()
@@ -487,11 +558,26 @@ func (v *View) readLoop(backend Backend) {
 }
 
 func (v *View) scrollBy(delta int) {
+	v.addScrollOffset(delta)
+}
+
+// addScrollOffset advances the scroll offset and clamps it to the available
+// scrollback in a single lock hold. Adjusting via a separate read and write
+// would let the PTY read goroutine's anchor update clobber a concurrent wheel
+// or key scroll (and vice versa).
+func (v *View) addScrollOffset(delta int) {
 	_, _, scrollbackRows := v.emu.Dimensions()
 	v.mu.Lock()
 	v.scrollOffset = clamp(v.scrollOffset+delta, 0, scrollbackRows)
 	v.mu.Unlock()
 	v.requestRedraw()
+}
+
+// clampScrollOffset re-clamps the current offset, which is how a shrinking
+// scrollback (the cap trimming rows, or the alternate screen clearing them)
+// pulls a stale offset back into range.
+func (v *View) clampScrollOffset() {
+	v.addScrollOffset(0)
 }
 
 // ScrollbackUp moves the local scrollback view upward by the given number of
@@ -512,16 +598,35 @@ func (v *View) ScrollbackDown(lines int) {
 	v.scrollBy(-lines)
 }
 
-// ScrollbackPageUp moves the local scrollback view by one visible page.
+// ScrollbackPageUp moves the local scrollback view up by one page less one
+// line. The overlap keeps a line of context visible across the jump, matching
+// xterm's Shift+PgUp.
 func (v *View) ScrollbackPageUp() {
-	_, rows, _ := v.emu.Dimensions()
-	v.scrollBy(rows)
+	v.scrollBy(max(1, v.pageLines()))
 }
 
-// ScrollbackPageDown moves the local scrollback view down by one visible page.
+// ScrollbackPageDown moves the local scrollback view down by one page less one
+// line, matching xterm's Shift+PgDn.
 func (v *View) ScrollbackPageDown() {
+	v.scrollBy(-max(1, v.pageLines()))
+}
+
+// pageLines is the distance one paged scroll covers: a full screen minus the
+// line that overlaps the previous page.
+func (v *View) pageLines() int {
 	_, rows, _ := v.emu.Dimensions()
-	v.scrollBy(-rows)
+	return rows - 1
+}
+
+// ScrollbackTop jumps to the oldest retained scrollback line.
+func (v *View) ScrollbackTop() {
+	_, _, scrollbackRows := v.emu.Dimensions()
+	v.setScrollOffset(scrollbackRows)
+}
+
+// ScrollbackBottom returns to the live screen.
+func (v *View) ScrollbackBottom() {
+	v.setScrollOffset(0)
 }
 
 // ScrollbackStatus returns the current local scroll offset and the total number
@@ -534,25 +639,92 @@ func (v *View) ScrollbackStatus() (offset int, rows int) {
 	return offset, rows
 }
 
-func (v *View) scrollToTop() {
+// RemoteMouseReporting reports whether the remote app enabled mouse reporting
+// (DECSET 1000/1002/1003/1009). When it has, the wheel belongs to the app.
+func (v *View) RemoteMouseReporting() bool {
+	ss := v.emu.Snapshot()
+	return mouseReportingEnabled(ss)
+}
+
+// UsingAltScreen reports whether the remote app is on the alternate screen
+// buffer (DECSET 1049). The emulator keeps no scrollback there, so the pane has
+// no local history to scroll and falls back to arrow keys.
+func (v *View) UsingAltScreen() bool {
+	return v.emu.Snapshot().UsingAlt
+}
+
+// setScrollOffset moves the view to an absolute scroll offset and repaints.
+func (v *View) setScrollOffset(offset int) {
 	_, _, scrollbackRows := v.emu.Dimensions()
 	v.mu.Lock()
-	v.scrollOffset = scrollbackRows
+	v.scrollOffset = clamp(offset, 0, scrollbackRows)
 	v.mu.Unlock()
 	v.requestRedraw()
 }
 
-func (v *View) scrollToBottom() {
+// preserveScrollAnchor keeps the content under a scrolled-up view still when
+// output arrives. The scroll offset counts rows back from the bottom, so every
+// row appended to the scrollback pushes the window up by one unless the offset
+// is advanced to match. Rows dropped off the front (the cap trimming the oldest
+// history, or the alternate screen clearing it) need no adjustment: they only
+// shrink the maximum offset, which the clamp applies, pinning the view to the
+// oldest retained line. At offset 0 the view is live and must keep following
+// the output.
+func (v *View) preserveScrollAnchor(added int) {
+	// The read, the decision and the write all run under one lock hold. Testing
+	// the offset first and adjusting it afterwards would let a wheel or key
+	// scroll land in between, so the anchor would overwrite the user's scroll
+	// with a value derived from the position it replaced.
+	//
+	// A view that is following the output (offset 0) stays there. Otherwise the
+	// offset advances by the rows added, which keeps the content under the
+	// reader still; the clamp also pulls a stale offset back in range when the
+	// scrollback shrinks underneath it, as the alternate screen does.
+	_, _, scrollbackRows := v.emu.Dimensions()
 	v.mu.Lock()
-	v.scrollOffset = 0
+	next := v.scrollOffset
+	if next > 0 {
+		// Anchored in history: advance by the rows added so the content under
+		// the reader stays still. The clamp also pulls the offset back in range
+		// when the scrollback shrinks underneath it.
+		next = clamp(next+added, 0, scrollbackRows)
+	}
+	changed := next != v.scrollOffset
+	v.scrollOffset = next
 	v.mu.Unlock()
-	v.requestRedraw()
+	if changed {
+		v.requestRedraw()
+	}
+}
+
+// scrollOffsetValue reads the current scroll offset.
+func (v *View) scrollOffsetValue() int {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.scrollOffset
+}
+
+// ScrollbackText returns the retained scrollback as text, oldest line first.
+// Lines are trimmed of trailing blanks; blank rows stay empty so the output's
+// shape is preserved.
+func (v *View) ScrollbackText() string {
+	return cellsToText(v.emu.ScrollbackRows())
+}
+
+// cellsToText renders rows of cells as newline-separated text.
+func cellsToText(rows [][]Cell) string {
+	var out strings.Builder
+	for i, row := range rows {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(strings.TrimRight(cellsToString(row), " "))
+	}
+	return out.String()
 }
 
 func (v *View) resetScrollback() {
-	v.mu.Lock()
-	v.scrollOffset = 0
-	v.mu.Unlock()
+	v.setScrollOffset(0)
 }
 
 // requestRedraw schedules a screen redraw on the tview event loop. Calls are
@@ -805,7 +977,7 @@ func (v *View) handleScrollbarMouse(action tview.MouseAction, event *tcell.Event
 func (v *View) scrollbarJumpTo(row int) {
 	_, viewRows, scrollbackRows := v.emu.Dimensions()
 	if scrollbackRows <= 0 || viewRows <= 0 {
-		v.scrollToBottom()
+		v.ScrollbackBottom()
 		return
 	}
 
@@ -815,7 +987,7 @@ func (v *View) scrollbarJumpTo(row int) {
 	_, thumbHeight := scrollbarThumb(viewRows, scrollbackRows, scrollOffset)
 	maxStart := max(0, viewRows-thumbHeight)
 	if maxStart == 0 {
-		v.scrollToBottom()
+		v.ScrollbackBottom()
 		return
 	}
 
@@ -823,10 +995,7 @@ func (v *View) scrollbarJumpTo(row int) {
 	ratio := float64(targetStart) / float64(maxStart)
 	targetOffset := scrollbackRows - int(math.Round(ratio*float64(scrollbackRows)))
 
-	v.mu.Lock()
-	v.scrollOffset = clamp(targetOffset, 0, scrollbackRows)
-	v.mu.Unlock()
-	v.requestRedraw()
+	v.setScrollOffset(clamp(targetOffset, 0, scrollbackRows))
 }
 
 func (v *View) syncTitle() {
@@ -894,20 +1063,7 @@ func drawStyle(style tcell.Style, reverseVideo bool) tcell.Style {
 }
 
 func (v *View) sendMouse(action tview.MouseAction, event *tcell.EventMouse) {
-	v.mu.RLock()
-	backend := v.backend
-	v.mu.RUnlock()
-	if backend == nil || event == nil {
-		return
-	}
-
-	x, y, _, _ := v.GetInnerRect()
-	ss := v.emu.Snapshot()
-	seq, ok := mouseEventToBytes(action, event, ss, x, y)
-	if !ok {
-		return
-	}
-	v.sendInput(backend, seq)
+	v.ForwardMouse(action, event)
 }
 
 func mouseEventToBytes(action tview.MouseAction, event *tcell.EventMouse, ss Snapshot, originX, originY int) ([]byte, bool) {

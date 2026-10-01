@@ -2,6 +2,7 @@ package tviewui
 
 import (
 	"fmt"
+	"sync"
 
 	tvxterm "github.com/ac-kurniawan/wardenssh/third_party/tvxterm"
 	"github.com/gdamore/tcell/v2"
@@ -11,18 +12,38 @@ import (
 // terminalView wraps a tvxterm.View with the WardenSSH terminal interaction
 // model:
 //
-//   - mouse-wheel over the view scrolls the local scrollback (never forwarded
-//     to the remote app, which would interpret it as arrow-key navigation);
+//   - the mouse wheel follows the remote app's own modes: when the app enabled
+//     mouse reporting (vim "set mouse=a", htop, tmux) the wheel is forwarded as
+//     a mouse sequence so the app scrolls itself; on the alternate screen with
+//     no mouse reporting (less, man) each tick becomes three arrow presses; at
+//     a plain shell it scrolls the pane's local scrollback;
 //   - primary-button click-hold-drag selects text locally and copies it to the
-//     OS clipboard on release.
+//     OS clipboard on release, in every mode;
+//   - Shift+PgUp/PgDn/Home/End scroll the pane's local scrollback and are not
+//     sent to the remote.
 //
-// All other mouse events are delegated to the embedded view unchanged, so
-// remote mouse-reporting apps (tmux/vim/less) still receive clicks and the
+// All other mouse events are delegated to the embedded view unchanged, so the
 // built-in scrollbar keeps working.
 type terminalView struct {
 	*tvxterm.View
 	dragging             bool // a primary-button selection drag is in progress
 	lastDragX, lastDragY int
+
+	// titleBase is the title the session chrome assigned. The visible title is
+	// composed from it plus the scroll marker during Draw, on the UI goroutine:
+	// writing the title from the PTY read goroutine would race the renderer.
+	titleBase string
+
+	// titleMu guards titleBase, which the chrome writes from the UI goroutine
+	// and Draw reads from the UI goroutine, but tests read directly.
+	titleMu sync.Mutex
+}
+
+// ScrollbackText returns the pane's retained history as text, oldest first, so
+// callers outside the package can assert on what the remote actually sent
+// (tests, smoke runs).
+func (s *terminalView) ScrollbackText() string {
+	return s.View.ScrollbackText()
 }
 
 // Dragging reports whether a primary-button text selection is in progress.
@@ -37,16 +58,52 @@ func (s *terminalView) Dragging() bool {
 // used for focus handling; it may be nil for tests.
 func newTerminalView(app *tview.Application, title string) *terminalView {
 	term := &terminalView{View: tvxterm.New(app)}
-	term.SetBorder(true).SetTitle(fmt.Sprintf(" %s ", title))
+	term.SetBorder(true)
 	term.SetScrollbar(true)
+	// The scroll marker is composed into the title by Draw, which runs on the
+	// UI goroutine: scrolling from the PTY read goroutine needs no title write
+	// of its own, the next frame picks the new offset up.
+	term.SetTerminalTitle(title)
 	return term
+}
+
+// SetTerminalTitle records the session chrome's title. The scroll marker is
+// added when the title is rendered, so a chrome rewrite cannot drop it.
+func (s *terminalView) SetTerminalTitle(title string) {
+	s.titleMu.Lock()
+	s.titleBase = title
+	s.titleMu.Unlock()
+}
+
+// TerminalTitle returns the title as rendered: the chrome's title plus the
+// scroll marker when the view is scrolled up.
+func (s *terminalView) TerminalTitle() string {
+	s.titleMu.Lock()
+	title := s.titleBase
+	s.titleMu.Unlock()
+	if offset, _ := s.ScrollbackStatus(); offset > 0 {
+		return fmt.Sprintf("%s [↑ %d]", title, offset)
+	}
+	return title
+}
+
+// Draw composes the visible title, then renders the terminal. Computing the
+// title here is what keeps the scroll marker on the surface the user reads:
+// tview draws the box title before any draw function runs, so the title must be
+// in place beforehand. This runs on the UI goroutine — the only one allowed to
+// write tview state — so scrolling from the PTY read goroutine never touches it.
+func (s *terminalView) Draw(screen tcell.Screen) {
+	s.SetTitle(" " + s.TerminalTitle() + " ")
+	s.View.Draw(screen)
 }
 
 // MouseHandler routes mouse events for the terminal:
 //
-//   - wheel -> local scrollback scrolling; during a selection drag the wheel
-//     also extends the highlight into the newly revealed lines instead of
-//     clearing it;
+//   - wheel -> the remote app's own scrollback when it owns the mouse (mouse
+//     reporting on), arrow keys when it is a full-screen app without mouse
+//     reporting, and the pane's local scrollback at a plain shell. During a
+//     selection drag the wheel always stays local and extends the highlight
+//     into the newly revealed lines instead of clearing it;
 //   - primary-button drag -> local text selection (copied to the clipboard on
 //     release). Dragging past the top or bottom edge scrolls the local
 //     scrollback. During a drag the view captures subsequent mouse events so
@@ -115,10 +172,10 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 
 		switch action {
 		case tview.MouseScrollUp:
-			s.scrollLocal(setFocus, -1)
+			s.handleWheel(action, event, setFocus, -1)
 			return true, nil
 		case tview.MouseScrollDown:
-			s.scrollLocal(setFocus, 1)
+			s.handleWheel(action, event, setFocus, 1)
 			return true, nil
 		case tview.MouseLeftDown:
 			if s.onScrollbarColumn(x, y) {
@@ -137,13 +194,33 @@ func (s *terminalView) MouseHandler() func(action tview.MouseAction, event *tcel
 	}
 }
 
-// scrollLocal scrolls the pane's own scrollback. dir < 0 moves toward older
-// lines. An already-focused view is not refocused: Focus() reports focus-in
-// to the remote, and that input path resets the scroll offset.
-func (s *terminalView) scrollLocal(setFocus func(p tview.Primitive), dir int) {
+// handleWheel routes one wheel tick by the remote app's own terminal modes:
+// mouse-owning apps get the event, full-screen apps without mouse reporting get
+// arrow keys, and a plain shell gets the pane's local scrollback. dir < 0 means
+// wheel-up (scrolling toward older content).
+func (s *terminalView) handleWheel(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive), dir int) {
 	if !s.HasFocus() {
 		setFocus(s)
 	}
+	if s.RemoteMouseReporting() {
+		// vim/htop/tmux scroll themselves; forwarding keeps their own
+		// scrollback authoritative.
+		s.ForwardMouse(action, event)
+		return
+	}
+	if s.UsingAltScreen() {
+		// less/man/vim without mouse support expect the arrow keys the wheel
+		// maps to in every terminal emulator that has no scrollback here.
+		s.SendArrowTicks(dir)
+		return
+	}
+	s.scrollLocal(dir)
+}
+
+// scrollLocal scrolls the pane's own scrollback. dir < 0 moves toward older
+// lines. An already-focused view is not refocused: Focus() reports focus-in
+// to the remote, and that input path resets the scroll offset.
+func (s *terminalView) scrollLocal(dir int) {
 	if dir < 0 {
 		s.ScrollbackUp(3)
 		return
@@ -154,8 +231,11 @@ func (s *terminalView) scrollLocal(setFocus func(p tview.Primitive), dir int) {
 // scrollSelection scrolls during a held selection and re-anchors the highlight
 // on the pointer so the newly revealed lines join the selection.
 func (s *terminalView) scrollSelection(setFocus func(p tview.Primitive), dir int) {
+	if !s.HasFocus() {
+		setFocus(s)
+	}
 	before, _ := s.ScrollbackStatus()
-	s.scrollLocal(setFocus, dir)
+	s.scrollLocal(dir)
 	after, _ := s.ScrollbackStatus()
 	x, y := s.lastDragX, s.lastDragY
 	_, iy, _, ih := s.GetInnerRect()

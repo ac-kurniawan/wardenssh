@@ -357,14 +357,20 @@ func formatUptime(up time.Duration) string {
 	}
 }
 
-// ActiveTitle returns the title of the displayed session (used in tests).
+// ActiveTitle returns the title of the displayed session, including the scroll
+// marker when the view is scrolled up (used in tests).
 func (p *TerminalPane) ActiveTitle() string {
 	p.mu.Lock()
 	var title string
+	var view tview.Primitive
 	if s, ok := p.sessions[p.active]; ok {
 		title = s.viewTitle
+		view = s.view
 	}
 	p.mu.Unlock()
+	if b, ok := view.(*terminalView); ok {
+		return b.TerminalTitle()
+	}
 	return title
 }
 
@@ -446,7 +452,10 @@ func (p *TerminalPane) setSessionTitle(key string, focused bool) {
 	p.mu.Unlock()
 
 	if b, ok := view.(*terminalView); ok {
-		b.SetTitle(" " + title + " ")
+		// The view owns the scroll marker: it appends one when scrolled up and
+		// restores the plain title at the bottom, so a chrome rewrite here
+		// cannot silently drop it.
+		b.SetTerminalTitle(title)
 	}
 }
 
@@ -616,6 +625,36 @@ func (p *TerminalPane) PingSlotForTest() string {
 		return s.pingSlot
 	}
 	return ""
+}
+
+// ScrollableTerminal exposes the scrollback operations of the displayed
+// session's view, so callers outside the package can drive and inspect pane
+// history (tests, smoke runs). It returns nil when no session is displayed.
+type ScrollableTerminal interface {
+	ScrollbackUp(lines int)
+	ScrollbackDown(lines int)
+	ScrollbackPageUp()
+	ScrollbackPageDown()
+	ScrollbackTop()
+	ScrollbackBottom()
+	ScrollbackStatus() (offset, rows int)
+	ScrollbackText() string
+	SendKey(event *tcell.EventKey) bool
+}
+
+// ActiveViewForTest returns the displayed session's scrollable view (tests).
+func (p *TerminalPane) ActiveViewForTest() ScrollableTerminal {
+	p.mu.Lock()
+	s := p.sessions[p.active]
+	p.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	tv, _ := s.view.(*terminalView)
+	if tv == nil {
+		return nil
+	}
+	return tv
 }
 
 // SetSessionViewForTest attaches a terminal view to an already registered
