@@ -105,6 +105,10 @@ func (c *Client) Login(email, masterPassword string) (*Session, error) {
 		symKey = dec
 	}
 
+	if len(symKey) < 64 {
+		return nil, fmt.Errorf("vault: invalid symmetric key length %d", len(symKey))
+	}
+
 	return &Session{
 		AccessToken:  tr.AccessToken,
 		RefreshToken: tr.RefreshToken,
@@ -174,6 +178,10 @@ func (c *Client) LoginWith2FA(email, masterPassword, twoFactorCode string, provi
 			return nil, fmt.Errorf("login 2fa: unwrap protected key (type 2): %w", err)
 		}
 		symKey = dec
+	}
+
+	if len(symKey) < 64 {
+		return nil, fmt.Errorf("vault: invalid symmetric key length %d", len(symKey))
 	}
 
 	return &Session{
