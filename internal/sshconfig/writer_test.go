@@ -506,3 +506,61 @@ func filePerm(t *testing.T, path string) os.FileMode {
 	}
 	return info.Mode().Perm()
 }
+
+func TestWriteKeyToFile_RefusesToOverwrite(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519_dup")
+
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err == nil {
+		t.Fatal("expected refusal to overwrite an existing key file")
+	}
+
+	// A pre-planted .pub alone (the private path free) is also a collision, and
+	// the private key written for it must be rolled back.
+	keyPath2 := filepath.Join(dir, "id_ed25519_pubonly")
+	if err := os.WriteFile(keyPath2+".pub", []byte("planted"), 0644); err != nil {
+		t.Fatalf("plant .pub: %v", err)
+	}
+	if err := sshconfig.WriteKeyToFile(keyPath2, []byte(privPEM)); err == nil {
+		t.Fatal("expected refusal when the .pub already exists")
+	}
+	if _, err := os.Stat(keyPath2); !os.IsNotExist(err) {
+		t.Error("private key must be rolled back when the .pub exists")
+	}
+	if got, _ := os.ReadFile(keyPath2 + ".pub"); string(got) != "planted" {
+		t.Errorf("planted .pub was modified: %q", got)
+	}
+}
+
+func TestWriteKeyToFile_RefusesSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0600); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	keyPath := filepath.Join(dir, "id_ed25519_link")
+	if err := os.Symlink(victim, keyPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err == nil {
+		t.Fatal("expected refusal for a symlinked key path")
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Errorf("symlink target was overwritten: %q", got)
+	}
+}

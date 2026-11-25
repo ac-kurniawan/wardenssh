@@ -159,8 +159,19 @@ func (a *App) HandleCopyVaultToLocal(entry hosts.Entry) error {
 		return fmt.Errorf("key is not exportable (passphrase-protected keys are unsupported): %w", err)
 	}
 
-	if err := checkSSHAlias(entry.Alias); err != nil {
-		return err
+	// Every value below is appended verbatim to the Host block. They come from
+	// the vault, so a newline or space in any of them would inject extra ssh
+	// directives (e.g. ProxyCommand).
+	for _, f := range []struct{ field, val string }{
+		{"alias", entry.Alias},
+		{"host", entry.HostName},
+		{"user", entry.User},
+		{"port", entry.Port},
+		{"proxyjump", entry.ProxyJump},
+	} {
+		if err := checkSSHValue(f.field, f.val); err != nil {
+			return err
+		}
 	}
 
 	configPath, sshDir, err := a.localSSHConfig()
@@ -288,16 +299,16 @@ func (a *App) HandleCopyLocalToVault(entry hosts.Entry, vaultTarget string) erro
 	return nil
 }
 
-// checkSSHAlias rejects aliases that cannot appear on an ssh_config `Host`
-// line. The alias of a vault entry is vault-supplied data, and a newline or
-// space in it would inject extra config directives.
-func checkSSHAlias(alias string) error {
-	if alias == "" {
+// checkSSHValue rejects a vault-supplied value that cannot appear on an
+// ssh_config line. Empty values are allowed (AppendHostEntry omits them) except
+// for the alias, which names the Host block.
+func checkSSHValue(field, val string) error {
+	if field == "alias" && val == "" {
 		return fmt.Errorf("entry has an empty alias")
 	}
-	for _, r := range alias {
+	for _, r := range val {
 		if r < 0x20 || r == 0x7f || unicode.IsSpace(r) {
-			return fmt.Errorf("alias %q contains whitespace or control characters", alias)
+			return fmt.Errorf("%s %q contains whitespace or control characters", field, val)
 		}
 	}
 	return nil

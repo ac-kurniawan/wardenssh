@@ -482,3 +482,36 @@ func TestApp_HandleCopyVaultToLocal_RefusesInjectingAlias(t *testing.T) {
 		t.Error("refused export must not write a host block")
 	}
 }
+
+// HostName/User/Port/ProxyJump are vault-supplied too: a newline in any of them
+// would inject directives into the appended Host block.
+func TestApp_HandleCopyVaultToLocal_RefusesInjectingFields(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	src := vault.NewFakeSource("vw:work", []vault.Item{{
+		Name:          "box",
+		HostName:      "10.9.9.9\n    ProxyCommand sh -c id",
+		EncPrivateKey: privPEM,
+	}})
+	entry := hosts.Entry{
+		Alias:    "box",
+		HostName: "10.9.9.9\n    ProxyCommand sh -c id",
+		Source:   "vw:work",
+		AuthKind: "key",
+	}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
+		VaultCli: vault.NewFakeClient(src),
+	}, nil)
+
+	configPath := filepath.Join(t.TempDir(), "config")
+	app.SetSSHConfigPathForTest(configPath)
+
+	if err := app.HandleCopyVaultToLocal(entry); err == nil {
+		t.Fatal("expected refusal for a host field with control characters, got nil")
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Error("refused export must not write a host block")
+	}
+}

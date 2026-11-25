@@ -93,7 +93,9 @@ func GenerateKeyToFile(algo string, keyPath string) error {
 
 // WriteKeyToFile writes already-materialized private key material to keyPath
 // (0600) and its derived authorized public key to keyPath + ".pub" (0644).
-// The key is parsed before anything is written, so invalid or
+// Nothing is overwritten: both files are created exclusively (O_EXCL, which
+// also refuses a pre-planted symlink), and the private key is removed again if
+// the public key cannot be created. The key is parsed first, so invalid or
 // passphrase-protected PEM leaves the filesystem untouched.
 func WriteKeyToFile(keyPath string, privPEM []byte) error {
 	signer, err := ssh.ParsePrivateKey(privPEM)
@@ -107,12 +109,25 @@ func WriteKeyToFile(keyPath string, privPEM []byte) error {
 		}
 	}
 
-	if err := os.WriteFile(keyPath, privPEM, 0600); err != nil {
+	writeNew := func(path string, data []byte, perm os.FileMode) error {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
+	}
+
+	if err := writeNew(keyPath, privPEM, 0600); err != nil {
 		return fmt.Errorf("write private key: %w", err)
 	}
 
 	pubAuth := ssh.MarshalAuthorizedKey(signer.PublicKey())
-	if err := os.WriteFile(keyPath+".pub", pubAuth, 0644); err != nil {
+	if err := writeNew(keyPath+".pub", pubAuth, 0644); err != nil {
+		_ = os.Remove(keyPath)
 		return fmt.Errorf("write public key: %w", err)
 	}
 
