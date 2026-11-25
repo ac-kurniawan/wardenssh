@@ -1383,12 +1383,20 @@ func (a *App) resolveVaultTarget(name string) (*vaultadapter.Source, *vaultclien
 	var cf config.CustomFields
 	var serverURL string
 
+	// Resolve per source rather than per client: a client added at runtime may
+	// wrap a real source without being a *vaultadapter.Client itself (the
+	// first-run flow starts with a fake client).
 	if a.deps.VaultCli != nil {
-		if vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client); ok {
-			targetSource = vAdapterClient.SourceByName(name)
-			if targetSource != nil {
-				sess = targetSource.Session()
-				cf = targetSource.Fields()
+		for _, src := range a.deps.VaultCli.Sources() {
+			real, ok := src.(*vaultadapter.Source)
+			if !ok {
+				continue
+			}
+			if real.Name() == name || strings.TrimPrefix(real.Name(), "vw:") == strings.TrimPrefix(name, "vw:") {
+				targetSource = real
+				sess = real.Session()
+				cf = real.Fields()
+				break
 			}
 		}
 	}

@@ -2,6 +2,7 @@ package tviewui_test
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultcrypto"
 )
 
 // vaultCopyFixture builds an app with one vault-sourced host entry whose vault
@@ -539,7 +541,8 @@ func TestApp_HandleCopyVaultToLocal_RollsBackOnAppendFailure(t *testing.T) {
 }
 
 // A vault that already has an item with the same name is refused, never
-// duplicated.
+// duplicated. The source is a real adapter source so the check is actually
+// reached (a plain vault.FakeClient cannot resolve a session).
 func TestApp_HandleCopyLocalToVault_RefusesDuplicateVaultItem(t *testing.T) {
 	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
 	if err != nil {
@@ -549,14 +552,73 @@ func TestApp_HandleCopyLocalToVault_RefusesDuplicateVaultItem(t *testing.T) {
 	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err != nil {
 		t.Fatalf("write key: %v", err)
 	}
-	src := vault.NewFakeSource("vw:work", []vault.Item{{Name: "dup", HostName: "10.0.0.1"}})
-	entry := hosts.Entry{Alias: "dup", HostName: "10.0.0.1", Source: "file", IdentityFile: keyPath, AuthKind: "key"}
-	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
-		VaultCli: vault.NewFakeClient(src),
-	}, nil)
 
-	if err := app.HandleCopyLocalToVault(entry, "vw:work"); err == nil {
+	sess := encSession(t)
+	cf := config.CustomFields{Host: "host", User: "user", Port: "port", ProxyJump: "proxyjump", Type: "type"}
+	existing := vaultclient.Cipher{
+		ID:     "dup-1",
+		Name:   encWith(t, sess, "dup"),
+		SshKey: &vaultclient.SshKey{PrivateKey: encWith(t, sess, "EXISTING-PRIVATE-KEY")},
+		Fields: []vaultclient.CustomField{
+			{Name: encWith(t, sess, "host"), Value: encWith(t, sess, "10.0.0.1")},
+		},
+	}
+	src := vaultadapter.NewSource("vw:work", sess, []vaultclient.Cipher{existing}, cf)
+
+	entry := hosts.Entry{Alias: "dup", HostName: "10.0.0.1", Source: "file", IdentityFile: keyPath, AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}),
+		tviewui.Deps{VaultCli: vaultadapter.NewClient(src), CustomFields: cf}, nil)
+
+	err = app.HandleCopyLocalToVault(entry, "vw:work")
+	if err == nil {
 		t.Fatal("expected duplicate-item refusal, got nil")
+	}
+	if !strings.Contains(err.Error(), "already has an item") {
+		t.Errorf("error = %v, want the duplicate-item refusal", err)
+	}
+}
+
+// First run starts with a fake vault client and no vaults; adding a real vault
+// at runtime must make local->vault copy work (the client wrapper is not a
+// *vaultadapter.Client).
+func TestApp_HandleCopyLocalToVault_AfterRuntimeAddedVault(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "id_ed25519_first")
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	var posted vaultclient.Cipher
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		posted.ID = "cipher-first"
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(posted)
+	}))
+	defer srv.Close()
+
+	sess := encSession(t)
+	cf := config.CustomFields{Host: "host", User: "user", Port: "port", ProxyJump: "proxyjump", Type: "type"}
+	src := vaultadapter.NewSource("vw:work", sess, nil, cf)
+
+	entry := hosts.Entry{Alias: "first", HostName: "10.0.0.2", Source: "file", IdentityFile: keyPath, AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
+		VaultCli:     vault.NewFakeClient(), // first-run state: no real vault yet
+		CustomFields: cf,
+	}, nil)
+	app.ApplyAddedVaultForTest(src, config.Vault{Name: "work", Server: srv.URL})
+
+	if err := app.HandleCopyLocalToVault(entry, "vw:work"); err != nil {
+		t.Fatalf("HandleCopyLocalToVault after runtime vault add: %v", err)
+	}
+	if posted.Type != 5 {
+		t.Errorf("posted cipher Type = %d, want 5", posted.Type)
 	}
 }
 
@@ -588,4 +650,28 @@ func TestApp_CtrlT_IgnoredWhileInfoModalOpen(t *testing.T) {
 	if app.InCopyModal() {
 		t.Error("Ctrl+T must not open the copy modal over the info overlay")
 	}
+}
+
+// encSession builds a session with random symmetric keys (no real vault).
+func encSession(t *testing.T) *vaultclient.Session {
+	t.Helper()
+	symEnc := make([]byte, 32)
+	symMac := make([]byte, 32)
+	if _, err := rand.Read(symEnc); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	if _, err := rand.Read(symMac); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	return &vaultclient.Session{AccessToken: "copy-session-token", SymEnc: symEnc, SymMac: symMac}
+}
+
+// encWith encrypts one field under the session key.
+func encWith(t *testing.T, sess *vaultclient.Session, plain string) string {
+	t.Helper()
+	ct, err := vaultcrypto.Encrypt(sess.SymEnc, sess.SymMac, []byte(plain))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	return ct
 }
