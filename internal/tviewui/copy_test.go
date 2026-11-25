@@ -39,15 +39,24 @@ func vaultCopyFixture(t *testing.T) (*tviewui.App, hosts.Entry, string, string) 
 		Source:   "vw:work",
 		AuthKind: "key",
 	}
-	src := vault.NewFakeSource("vw:work", []vault.Item{{
-		Name:          "vaultbox",
-		HostName:      "10.9.9.9",
-		User:          "deploy",
-		Port:          "22",
-		EncPrivateKey: privPEM,
-	}})
+	// A real adapter source: the item is genuinely encrypted, so this exercises
+	// the same path a live vault would.
+	sess := encSession(t)
+	cf := config.CustomFields{Host: "host", User: "user", Port: "port", ProxyJump: "proxyjump", Type: "type"}
+	src := vaultadapter.NewSource("vw:work", sess, []vaultclient.Cipher{{
+		ID:     "vaultbox-1",
+		Name:   encWith(t, sess, "vaultbox"),
+		SshKey: &vaultclient.SshKey{PrivateKey: encWith(t, sess, privPEM)},
+		Fields: []vaultclient.CustomField{
+			{Name: encWith(t, sess, "host"), Value: encWith(t, sess, "10.9.9.9")},
+			{Name: encWith(t, sess, "type"), Value: encWith(t, sess, "SSH")},
+			{Name: encWith(t, sess, "user"), Value: encWith(t, sess, "deploy")},
+			{Name: encWith(t, sess, "port"), Value: encWith(t, sess, "22")},
+		},
+	}}, cf)
 	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
-		VaultCli: vault.NewFakeClient(src),
+		VaultCli:     vaultadapter.NewClient(src),
+		CustomFields: cf,
 	}, nil)
 
 	dir := t.TempDir()

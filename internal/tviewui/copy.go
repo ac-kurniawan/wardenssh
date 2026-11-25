@@ -111,21 +111,19 @@ func (a *App) copyVaultTarget() string {
 	return ""
 }
 
-// vaultSourceUnlocked reports whether name resolves to a source that can
-// decrypt right now: a real vault source needs a live session, while other
-// vault.Client implementations (fakes) decide for themselves.
+// vaultSourceUnlocked reports whether name resolves to a vault source that can
+// decrypt right now. It accepts exactly what resolveVaultTarget accepts, so the
+// modal never opens for a target the handler would then reject.
 func (a *App) vaultSourceUnlocked(name string) bool {
 	if a.deps.VaultCli == nil {
 		return false
 	}
 	for _, src := range a.deps.VaultCli.Sources() {
-		if src.Name() != name {
+		real, ok := src.(*vaultadapter.Source)
+		if !ok || real.Name() != name {
 			continue
 		}
-		if real, ok := src.(*vaultadapter.Source); ok {
-			return real.Session() != nil
-		}
-		return true
+		return real.Session() != nil
 	}
 	return false
 }
