@@ -116,6 +116,7 @@ func WriteKeyToFile(keyPath string, privPEM []byte) error {
 		}
 		if _, err := f.Write(data); err != nil {
 			f.Close()
+			_ = os.Remove(path) // do not leave a truncated key behind
 			return err
 		}
 		return f.Close()
