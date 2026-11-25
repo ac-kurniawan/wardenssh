@@ -1882,11 +1882,13 @@ func (a *App) HardCloseActiveSession() {
 //     clears the filter instead. Tab / Ctrl+B / Ctrl+\ move focus to the terminal
 //     when a session is running; Ctrl+S (and Ctrl+B when idle) opens the scope
 //     switcher; '/' focuses the filter; '?' opens help; Ctrl+D deletes the
-//     selected host (confirming also kills its live session, if any).
-//   - Setup / quit / disconnect / create / edit / delete / scope modal: passed
-//     through so those modals handle their own keys.
+//     selected host (confirming also kills its live session, if any); Ctrl+T
+//     copies the selected host between the local config and a vault (direction
+//     follows the entry's source).
+//   - Setup / quit / disconnect / create / edit / delete / copy / scope modal:
+//     passed through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
-	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inScope || a.inHelp || a.inAddVault {
+	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inCopy || a.inScope || a.inHelp || a.inAddVault {
 		return event
 	}
 
@@ -2002,6 +2004,11 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		if e, ok := a.hostPane.SelectedEntry(); ok {
 			a.showDeleteModal(e)
 		}
+		return nil
+	case tcell.KeyCtrlT:
+		// Copy the selected entry across the vault/local boundary (direction
+		// follows the entry's source; the modal states what it touches).
+		a.HandleCopyKeyOpen()
 		return nil
 	}
 	if event.Rune() == '/' {

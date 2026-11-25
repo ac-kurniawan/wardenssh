@@ -47,6 +47,7 @@ func helpText(mode string) string {
 		key("[Ctrl+N]") + "     New connection\n" +
 		key("[Ctrl+E]") + "     Edit connection\n" +
 		key("[Ctrl+D]") + "     Delete host\n" +
+		key("[Ctrl+T]") + "     Copy vault<->local\n" +
 		key("[Ctrl+R]") + "     Sync vault\n" +
 		key("[Ctrl+A]") + "     Add vault\n" +
 		key("[?]") + "         This help\n" +
