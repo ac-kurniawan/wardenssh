@@ -357,3 +357,128 @@ func TestApp_CopyModalConfirmCopiesVaultEntry(t *testing.T) {
 		t.Errorf("expected exported key file: %v", err)
 	}
 }
+
+// A vault item name is attacker-influenced data (it is whatever the vault
+// holds): it must never steer the exported key file outside ~/.ssh.
+func TestApp_HandleCopyVaultToLocal_AliasCannotEscapeSSHDir(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	alias := "../../escape"
+	src := vault.NewFakeSource("vw:work", []vault.Item{{
+		Name:          alias,
+		HostName:      "10.9.9.9",
+		EncPrivateKey: privPEM,
+	}})
+	entry := hosts.Entry{Alias: alias, HostName: "10.9.9.9", Source: "vw:work", AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
+		VaultCli: vault.NewFakeClient(src),
+	}, nil)
+
+	dir := t.TempDir()
+	sshDir := filepath.Join(dir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configPath := filepath.Join(sshDir, "config")
+	app.SetSSHConfigPathForTest(configPath)
+
+	if err := app.HandleCopyVaultToLocal(entry); err != nil {
+		t.Fatalf("HandleCopyVaultToLocal: %v", err)
+	}
+
+	// Nothing may be written outside the ssh dir.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != ".ssh" {
+		t.Errorf("copy wrote outside the ssh dir: %v", entries)
+	}
+
+	var found *hosts.Entry
+	for _, e := range app.HostList().All() {
+		if e.Source == "file" {
+			found = &e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected merged file entry")
+	}
+	if !strings.HasPrefix(found.IdentityFile, sshDir+string(os.PathSeparator)) {
+		t.Errorf("IdentityFile %q escapes %q", found.IdentityFile, sshDir)
+	}
+}
+
+// A deep ../ chain in a vault item name must not escape ~/.ssh (a single
+// "../" is already neutralized by the id_<algo>_ prefix; several are not).
+func TestApp_HandleCopyVaultToLocal_DeepTraversalStaysInSSHDir(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	alias := "../../../../../../tmp/wardenssh-pwn"
+	src := vault.NewFakeSource("vw:work", []vault.Item{{
+		Name:          alias,
+		HostName:      "10.9.9.9",
+		EncPrivateKey: privPEM,
+	}})
+	entry := hosts.Entry{Alias: alias, HostName: "10.9.9.9", Source: "vw:work", AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
+		VaultCli: vault.NewFakeClient(src),
+	}, nil)
+
+	sshDir := filepath.Join(t.TempDir(), ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	app.SetSSHConfigPathForTest(filepath.Join(sshDir, "config"))
+
+	if err := app.HandleCopyVaultToLocal(entry); err != nil {
+		t.Fatalf("HandleCopyVaultToLocal: %v", err)
+	}
+
+	for _, e := range app.HostList().All() {
+		if e.Source != "file" {
+			continue
+		}
+		if !strings.HasPrefix(e.IdentityFile, sshDir+string(os.PathSeparator)) {
+			t.Fatalf("IdentityFile %q escaped %q", e.IdentityFile, sshDir)
+		}
+		if _, err := os.Stat(e.IdentityFile); err != nil {
+			t.Errorf("exported key missing at %s: %v", e.IdentityFile, err)
+		}
+	}
+}
+
+// A newline in a vault item name would inject extra directives into the
+// `Host` line: the export refuses instead.
+func TestApp_HandleCopyVaultToLocal_RefusesInjectingAlias(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	alias := "box\n    ProxyCommand sh -c id"
+	src := vault.NewFakeSource("vw:work", []vault.Item{{
+		Name:          alias,
+		HostName:      "10.9.9.9",
+		EncPrivateKey: privPEM,
+	}})
+	entry := hosts.Entry{Alias: alias, HostName: "10.9.9.9", Source: "vw:work", AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
+		VaultCli: vault.NewFakeClient(src),
+	}, nil)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	app.SetSSHConfigPathForTest(configPath)
+
+	if err := app.HandleCopyVaultToLocal(entry); err == nil {
+		t.Fatal("expected refusal for alias with control characters, got nil")
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Error("refused export must not write a host block")
+	}
+}

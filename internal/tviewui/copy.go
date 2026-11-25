@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"golang.org/x/crypto/ssh"
 
@@ -158,11 +159,15 @@ func (a *App) HandleCopyVaultToLocal(entry hosts.Entry) error {
 		return fmt.Errorf("key is not exportable (passphrase-protected keys are unsupported): %w", err)
 	}
 
+	if err := checkSSHAlias(entry.Alias); err != nil {
+		return err
+	}
+
 	configPath, sshDir, err := a.localSSHConfig()
 	if err != nil {
 		return err
 	}
-	identityPath := filepath.Join(sshDir, fmt.Sprintf("id_%s_%s", keyAlgoName(signer.PublicKey()), entry.Alias))
+	identityPath := filepath.Join(sshDir, identityFileName(keyAlgoName(signer.PublicKey()), entry.Alias))
 
 	if _, err := os.Stat(identityPath); err == nil {
 		return fmt.Errorf("key file %s already exists; refusing to overwrite", identityPath)
@@ -281,6 +286,32 @@ func (a *App) HandleCopyLocalToVault(entry hosts.Entry, vaultTarget string) erro
 	}})
 	a.hostPane.Refresh()
 	return nil
+}
+
+// checkSSHAlias rejects aliases that cannot appear on an ssh_config `Host`
+// line. The alias of a vault entry is vault-supplied data, and a newline or
+// space in it would inject extra config directives.
+func checkSSHAlias(alias string) error {
+	if alias == "" {
+		return fmt.Errorf("entry has an empty alias")
+	}
+	for _, r := range alias {
+		if r < 0x20 || r == 0x7f || unicode.IsSpace(r) {
+			return fmt.Errorf("alias %q contains whitespace or control characters", alias)
+		}
+	}
+	return nil
+}
+
+// identityFileName builds the identity file name (id_<algo>_<alias>) for the
+// ssh dir. Path separators in the vault-supplied alias are stripped so the
+// write can never land outside that dir.
+func identityFileName(algo, alias string) string {
+	safe := strings.NewReplacer("/", "_", "\\", "_", string(os.PathSeparator), "_").Replace(alias)
+	if safe == "" || safe == "." || safe == ".." {
+		safe = "exported"
+	}
+	return "id_" + algo + "_" + safe
 }
 
 // keyAlgoName maps a public key type to the algo token used in generated
