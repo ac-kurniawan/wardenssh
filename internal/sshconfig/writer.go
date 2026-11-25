@@ -91,6 +91,34 @@ func GenerateKeyToFile(algo string, keyPath string) error {
 	return nil
 }
 
+// WriteKeyToFile writes already-materialized private key material to keyPath
+// (0600) and its derived authorized public key to keyPath + ".pub" (0644).
+// The key is parsed before anything is written, so invalid or
+// passphrase-protected PEM leaves the filesystem untouched.
+func WriteKeyToFile(keyPath string, privPEM []byte) error {
+	signer, err := ssh.ParsePrivateKey(privPEM)
+	if err != nil {
+		return fmt.Errorf("parse private key: %w", err)
+	}
+
+	if dir := filepath.Dir(keyPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return fmt.Errorf("create key directory: %w", err)
+		}
+	}
+
+	if err := os.WriteFile(keyPath, privPEM, 0600); err != nil {
+		return fmt.Errorf("write private key: %w", err)
+	}
+
+	pubAuth := ssh.MarshalAuthorizedKey(signer.PublicKey())
+	if err := os.WriteFile(keyPath+".pub", pubAuth, 0644); err != nil {
+		return fmt.Errorf("write public key: %w", err)
+	}
+
+	return nil
+}
+
 // AppendHostEntry appends a formatted Host block to the ssh config file.
 func AppendHostEntry(configPath string, cfg HostConfig) error {
 	if dir := filepath.Dir(configPath); dir != "" && dir != "." {

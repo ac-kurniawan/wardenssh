@@ -445,3 +445,64 @@ func TestUpdateHostEntry_NotFound(t *testing.T) {
 
 
 
+
+func TestWriteKeyToFile_RoundTrip(t *testing.T) {
+	privPEM, pubAuth, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "nested", ".ssh")
+	keyPath := filepath.Join(dir, "id_ed25519_exported")
+
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err != nil {
+		t.Fatalf("WriteKeyToFile: %v", err)
+	}
+
+	// Private key bytes land on disk verbatim, 0600.
+	gotPriv, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read private key: %v", err)
+	}
+	if string(gotPriv) != privPEM {
+		t.Error("private key bytes on disk differ from supplied PEM")
+	}
+	if perm := filePerm(t, keyPath); perm != 0600 {
+		t.Errorf("private key perm = %o, want 0600", perm)
+	}
+
+	// Public key is derived from the private key, and is the authorized-key form.
+	gotPub, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		t.Fatalf("read public key: %v", err)
+	}
+	if string(gotPub) != pubAuth {
+		t.Errorf("public key = %q, want %q", gotPub, pubAuth)
+	}
+	if perm := filePerm(t, keyPath+".pub"); perm != 0644 {
+		t.Errorf("public key perm = %o, want 0644", perm)
+	}
+
+	// The private key must round-trip through the parser ssh uses.
+	if _, err := ssh.ParseRawPrivateKey(gotPriv); err != nil {
+		t.Errorf("written private key does not parse: %v", err)
+	}
+}
+
+func TestWriteKeyToFile_RejectsGarbage(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "id_bad")
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte("not a key")); err == nil {
+		t.Fatal("expected error for unparsable key material")
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Error("unparsable key must not be written to disk")
+	}
+}
+
+func filePerm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info.Mode().Perm()
+}
