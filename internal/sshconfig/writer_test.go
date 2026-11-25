@@ -466,8 +466,12 @@ func TestWriteKeyToFile_RoundTrip(t *testing.T) {
 	if string(gotPriv) != privPEM {
 		t.Error("private key bytes on disk differ from supplied PEM")
 	}
-	if perm := filePerm(t, keyPath); perm != 0600 {
-		t.Errorf("private key perm = %o, want 0600", perm)
+	// Windows has no POSIX permission bits: os.Stat reports 0666 for any
+	// writable file, so only assert the mode where it means something.
+	if runtime.GOOS != "windows" {
+		if perm := filePerm(t, keyPath); perm != 0600 {
+			t.Errorf("private key perm = %o, want 0600", perm)
+		}
 	}
 
 	// Public key is derived from the private key, and is the authorized-key form.
@@ -478,8 +482,10 @@ func TestWriteKeyToFile_RoundTrip(t *testing.T) {
 	if string(gotPub) != pubAuth {
 		t.Errorf("public key = %q, want %q", gotPub, pubAuth)
 	}
-	if perm := filePerm(t, keyPath+".pub"); perm != 0644 {
-		t.Errorf("public key perm = %o, want 0644", perm)
+	if runtime.GOOS != "windows" {
+		if perm := filePerm(t, keyPath+".pub"); perm != 0644 {
+			t.Errorf("public key perm = %o, want 0644", perm)
+		}
 	}
 
 	// The private key must round-trip through the parser ssh uses.

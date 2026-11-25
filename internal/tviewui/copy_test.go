@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -77,8 +78,12 @@ func TestApp_HandleCopyVaultToLocal_WritesKeyAndHostBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected private key at %s: %v", keyPath, err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("private key perm = %o, want 0600", perm)
+	// Windows reports 0666 for any writable file; the mode only means something
+	// on Unix (the writer is the Unix-checked sshconfig path).
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("private key perm = %o, want 0600", perm)
+		}
 	}
 	if _, err := os.Stat(keyPath + ".pub"); err != nil {
 		t.Errorf("expected public key at %s.pub: %v", keyPath, err)
