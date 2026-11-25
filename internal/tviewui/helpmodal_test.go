@@ -10,7 +10,7 @@ import (
 func TestHelpModalHostContent(t *testing.T) {
 	m := tviewui.NewHelpModal("host")
 	text := m.Text()
-	for _, want := range []string{"Tab", "Ctrl+B", "/", "?", "Ctrl+Q", "Enter", "j", "k"} {
+	for _, want := range []string{"Tab", "Ctrl+B", "/", "?", "Ctrl+Q", "Ctrl+T", "Enter", "j", "k"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("help missing %q:\n%s", want, text)
 		}

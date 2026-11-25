@@ -445,3 +445,128 @@ func TestUpdateHostEntry_NotFound(t *testing.T) {
 
 
 
+
+func TestWriteKeyToFile_RoundTrip(t *testing.T) {
+	privPEM, pubAuth, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "nested", ".ssh")
+	keyPath := filepath.Join(dir, "id_ed25519_exported")
+
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err != nil {
+		t.Fatalf("WriteKeyToFile: %v", err)
+	}
+
+	// Private key bytes land on disk verbatim, 0600.
+	gotPriv, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read private key: %v", err)
+	}
+	if string(gotPriv) != privPEM {
+		t.Error("private key bytes on disk differ from supplied PEM")
+	}
+	// Windows has no POSIX permission bits: os.Stat reports 0666 for any
+	// writable file, so only assert the mode where it means something.
+	if runtime.GOOS != "windows" {
+		if perm := filePerm(t, keyPath); perm != 0600 {
+			t.Errorf("private key perm = %o, want 0600", perm)
+		}
+	}
+
+	// Public key is derived from the private key, and is the authorized-key form.
+	gotPub, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		t.Fatalf("read public key: %v", err)
+	}
+	if string(gotPub) != pubAuth {
+		t.Errorf("public key = %q, want %q", gotPub, pubAuth)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := filePerm(t, keyPath+".pub"); perm != 0644 {
+			t.Errorf("public key perm = %o, want 0644", perm)
+		}
+	}
+
+	// The private key must round-trip through the parser ssh uses.
+	if _, err := ssh.ParseRawPrivateKey(gotPriv); err != nil {
+		t.Errorf("written private key does not parse: %v", err)
+	}
+}
+
+func TestWriteKeyToFile_RejectsGarbage(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "id_bad")
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte("not a key")); err == nil {
+		t.Fatal("expected error for unparsable key material")
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Error("unparsable key must not be written to disk")
+	}
+}
+
+func filePerm(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info.Mode().Perm()
+}
+
+func TestWriteKeyToFile_RefusesToOverwrite(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519_dup")
+
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err == nil {
+		t.Fatal("expected refusal to overwrite an existing key file")
+	}
+
+	// A pre-planted .pub alone (the private path free) is also a collision, and
+	// the private key written for it must be rolled back.
+	keyPath2 := filepath.Join(dir, "id_ed25519_pubonly")
+	if err := os.WriteFile(keyPath2+".pub", []byte("planted"), 0644); err != nil {
+		t.Fatalf("plant .pub: %v", err)
+	}
+	if err := sshconfig.WriteKeyToFile(keyPath2, []byte(privPEM)); err == nil {
+		t.Fatal("expected refusal when the .pub already exists")
+	}
+	if _, err := os.Stat(keyPath2); !os.IsNotExist(err) {
+		t.Error("private key must be rolled back when the .pub exists")
+	}
+	if got, _ := os.ReadFile(keyPath2 + ".pub"); string(got) != "planted" {
+		t.Errorf("planted .pub was modified: %q", got)
+	}
+}
+
+func TestWriteKeyToFile_RefusesSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("untouched"), 0600); err != nil {
+		t.Fatalf("seed victim: %v", err)
+	}
+	keyPath := filepath.Join(dir, "id_ed25519_link")
+	if err := os.Symlink(victim, keyPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err == nil {
+		t.Fatal("expected refusal for a symlinked key path")
+	}
+	if got, _ := os.ReadFile(victim); string(got) != "untouched" {
+		t.Errorf("symlink target was overwritten: %q", got)
+	}
+}
