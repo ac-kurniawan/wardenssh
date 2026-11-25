@@ -52,6 +52,7 @@ type App struct {
 	createModal   *CreateModal
 	editModal     *CreateModal
 	deleteModal   *DeleteModal
+	copyModal     *CopyModal
 	scopeModal    *ScopeModal
 	helpModal     *HelpModal
 	addVaultModal *AddVaultModal
@@ -72,6 +73,7 @@ type App struct {
 	inCreate      bool
 	inEdit        bool
 	inDelete      bool
+	inCopy        bool
 	inAddVault    bool
 	inScope       bool
 	inHelp        bool
@@ -954,101 +956,17 @@ func (a *App) handleCreateFileConnection(params CreateParams) error {
 }
 
 func (a *App) handleCreateVaultConnection(params CreateParams) error {
-	vaultName := strings.TrimPrefix(params.Target, "vw:")
-	var sess *vaultclient.Session
-	var cf config.CustomFields
-	var targetSource *vaultadapter.Source
-	var serverURL string
-
-	if a.deps.VaultCli != nil {
-		if vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client); ok {
-			targetSource = vAdapterClient.SourceByName(params.Target)
-			if targetSource == nil {
-				targetSource = vAdapterClient.SourceByName(vaultName)
-			}
-			if targetSource != nil {
-				sess = targetSource.Session()
-				cf = targetSource.Fields()
-			}
-		}
-	}
-
-	// Fallback custom fields from deps if not retrieved from source
-	if cf.Host == "" {
-		cf = a.deps.CustomFields
-	}
-	if cf.Host == "" {
-		cf.Host = "host"
-	}
-	if cf.User == "" {
-		cf.User = "user"
-	}
-	if cf.Port == "" {
-		cf.Port = "port"
-	}
-	if cf.ProxyJump == "" {
-		cf.ProxyJump = "proxyjump"
-	}
-	if cf.Type == "" {
-		cf.Type = "type"
-	}
-
-	// Find server URL from configured vaults
-	for _, v := range a.vaults {
-		if v.Name == vaultName || v.Name == params.Target || "vw:"+v.Name == params.Target {
-			serverURL = v.Server
-			break
-		}
-	}
-	if serverURL == "" && len(a.vaults) > 0 {
-		serverURL = a.vaults[0].Server
-	}
-
-	if sess == nil {
-		return fmt.Errorf("vault %q is not unlocked or unavailable", params.Target)
+	targetSource, sess, cf, serverURL, err := a.resolveVaultTarget(params.Target)
+	if err != nil {
+		return err
 	}
 
 	vc := vaultclientNew(serverURL)
 
-	encName, err := sess.EncryptField(params.Alias)
+	encName, customFields, err := buildVaultCipherFields(sess, cf, params.Alias,
+		params.HostName, params.User, params.Port, params.ProxyJump)
 	if err != nil {
-		return fmt.Errorf("encrypt name: %w", err)
-	}
-
-	// Build custom fields
-	var customFields []vaultclient.CustomField
-	fHost, err := encryptCustomField(sess, cf.Host, params.HostName)
-	if err != nil {
-		return fmt.Errorf("encrypt host field: %w", err)
-	}
-	customFields = append(customFields, fHost)
-
-	fType, err := encryptCustomField(sess, cf.Type, "SSH")
-	if err != nil {
-		return fmt.Errorf("encrypt type field: %w", err)
-	}
-	customFields = append(customFields, fType)
-
-	if params.User != "" {
-		fUser, err := encryptCustomField(sess, cf.User, params.User)
-		if err != nil {
-			return fmt.Errorf("encrypt user field: %w", err)
-		}
-		customFields = append(customFields, fUser)
-	}
-	if params.Port != "" {
-		fPort, err := encryptCustomField(sess, cf.Port, params.Port)
-		if err != nil {
-			return fmt.Errorf("encrypt port field: %w", err)
-		}
-		customFields = append(customFields, fPort)
-	}
-	if params.ProxyJump != "" {
-		fPJ, err := encryptCustomField(sess, cf.ProxyJump, params.ProxyJump)
-		if err != nil {
-			return fmt.Errorf("encrypt proxyjump field: %w", err)
-		}
-		customFields = append(customFields, fPJ)
+		return err
 	}
 
 	authKind := params.AuthKind
@@ -1084,26 +1002,14 @@ func (a *App) handleCreateVaultConnection(params CreateParams) error {
 		if err != nil {
 			return fmt.Errorf("generate keypair: %w", err)
 		}
-		encPriv, err := sess.EncryptField(privPEM)
+		sshKey, err := encryptSshKey(sess, privPEM, pubAuth, fingerprint)
 		if err != nil {
-			return fmt.Errorf("encrypt private key: %w", err)
-		}
-		encPub, err := sess.EncryptField(pubAuth)
-		if err != nil {
-			return fmt.Errorf("encrypt public key: %w", err)
-		}
-		encFp, err := sess.EncryptField(fingerprint)
-		if err != nil {
-			return fmt.Errorf("encrypt key fingerprint: %w", err)
+			return err
 		}
 		cipherItem = vaultclient.Cipher{
-			Name: encName,
-			Type: 5,
-			SshKey: &vaultclient.SshKey{
-				PrivateKey:     encPriv,
-				PublicKey:      encPub,
-				KeyFingerprint: encFp,
-			},
+			Name:   encName,
+			Type:   5,
+			SshKey: sshKey,
 			Fields: customFields,
 		}
 	}
@@ -1489,6 +1395,143 @@ func encryptCustomFieldWithSource(src *vaultadapter.Source, wrappedKey, name, va
 		Value: encVal,
 		Type:  0,
 	}, nil
+}
+
+// resolveVaultTarget looks up an unlocked vault source by name (accepting both
+// "vw:<name>" and "<name>") and returns its session, custom-field mapping and
+// server URL. An empty session means the vault is unavailable.
+func (a *App) resolveVaultTarget(name string) (*vaultadapter.Source, *vaultclient.Session, config.CustomFields, string, error) {
+	var targetSource *vaultadapter.Source
+	var sess *vaultclient.Session
+	var cf config.CustomFields
+	var serverURL string
+
+	if a.deps.VaultCli != nil {
+		if vAdapterClient, ok := a.deps.VaultCli.(*vaultadapter.Client); ok {
+			targetSource = vAdapterClient.SourceByName(name)
+			if targetSource != nil {
+				sess = targetSource.Session()
+				cf = targetSource.Fields()
+			}
+		}
+	}
+
+	// Fallback custom fields from deps if not retrieved from source
+	if cf.Host == "" {
+		cf = a.deps.CustomFields
+	}
+	if cf.Host == "" {
+		cf.Host = "host"
+	}
+	if cf.User == "" {
+		cf.User = "user"
+	}
+	if cf.Port == "" {
+		cf.Port = "port"
+	}
+	if cf.ProxyJump == "" {
+		cf.ProxyJump = "proxyjump"
+	}
+	if cf.Type == "" {
+		cf.Type = "type"
+	}
+
+	// Find server URL from configured vaults
+	for _, v := range a.vaults {
+		if v.Name == name || "vw:"+v.Name == name {
+			serverURL = v.Server
+			break
+		}
+	}
+	if serverURL == "" && len(a.vaults) > 0 {
+		serverURL = a.vaults[0].Server
+	}
+
+	if sess == nil {
+		return nil, nil, cf, serverURL, fmt.Errorf("vault %q is not unlocked or unavailable", name)
+	}
+	return targetSource, sess, cf, serverURL, nil
+}
+
+// buildVaultCipherFields encrypts an item name plus the connection custom
+// fields (host/type/user/port/proxyjump) every SSH cipher carries.
+func buildVaultCipherFields(sess *vaultclient.Session, cf config.CustomFields, alias, hostName, user, port, proxyJump string) (string, []vaultclient.CustomField, error) {
+	encName, err := sess.EncryptField(alias)
+	if err != nil {
+		return "", nil, fmt.Errorf("encrypt name: %w", err)
+	}
+
+	var customFields []vaultclient.CustomField
+	fHost, err := encryptCustomField(sess, cf.Host, hostName)
+	if err != nil {
+		return "", nil, fmt.Errorf("encrypt host field: %w", err)
+	}
+	customFields = append(customFields, fHost)
+
+	fType, err := encryptCustomField(sess, cf.Type, "SSH")
+	if err != nil {
+		return "", nil, fmt.Errorf("encrypt type field: %w", err)
+	}
+	customFields = append(customFields, fType)
+
+	if user != "" {
+		fUser, err := encryptCustomField(sess, cf.User, user)
+		if err != nil {
+			return "", nil, fmt.Errorf("encrypt user field: %w", err)
+		}
+		customFields = append(customFields, fUser)
+	}
+	if port != "" {
+		fPort, err := encryptCustomField(sess, cf.Port, port)
+		if err != nil {
+			return "", nil, fmt.Errorf("encrypt port field: %w", err)
+		}
+		customFields = append(customFields, fPort)
+	}
+	if proxyJump != "" {
+		fPJ, err := encryptCustomField(sess, cf.ProxyJump, proxyJump)
+		if err != nil {
+			return "", nil, fmt.Errorf("encrypt proxyjump field: %w", err)
+		}
+		customFields = append(customFields, fPJ)
+	}
+	return encName, customFields, nil
+}
+
+// encryptSshKey encrypts the SSH-Key payload. The fingerprint is always
+// included: VaultWarden nulls the entire sshKey object without it.
+func encryptSshKey(sess *vaultclient.Session, privPEM, pubAuth, fingerprint string) (*vaultclient.SshKey, error) {
+	encPriv, err := sess.EncryptField(privPEM)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt private key: %w", err)
+	}
+	encPub, err := sess.EncryptField(pubAuth)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt public key: %w", err)
+	}
+	encFp, err := sess.EncryptField(fingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt key fingerprint: %w", err)
+	}
+	return &vaultclient.SshKey{
+		PrivateKey:     encPriv,
+		PublicKey:      encPub,
+		KeyFingerprint: encFp,
+	}, nil
+}
+
+// localSSHConfig returns the ssh config path in use and the directory identity
+// files live in (the a.sshConfigPath override, else ~/.ssh).
+func (a *App) localSSHConfig() (configPath, sshDir string, err error) {
+	if a.sshConfigPath != "" {
+		return a.sshConfigPath, filepath.Dir(a.sshConfigPath), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve home dir: %w", err)
+	}
+	sshDir = filepath.Join(home, ".ssh")
+	return filepath.Join(sshDir, "config"), sshDir, nil
 }
 
 // ConfirmDisconnect confirms the disconnect modal (tests / modal 'y').
