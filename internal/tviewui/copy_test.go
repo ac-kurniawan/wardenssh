@@ -262,3 +262,98 @@ func TestApp_HandleCopyLocalToVault_RefusesUnlockedMissingVault(t *testing.T) {
 		t.Fatal("expected error when no vault client is configured, got nil")
 	}
 }
+
+// unlockedVaultDeps builds a vault client with one unlocked source (no HTTP).
+func unlockedVaultDeps() tviewui.Deps {
+	symKey := bytes.Repeat([]byte{0x04}, 64)
+	sess := &vaultclient.Session{
+		AccessToken: "route-token",
+		SymEnc:      symKey[:32],
+		SymMac:      symKey[32:],
+	}
+	src := vaultadapter.NewSource("vw:work", sess, nil, config.CustomFields{})
+	return tviewui.Deps{VaultCli: vaultadapter.NewClient(src)}
+}
+
+func TestApp_CtrlT_VaultEntryOffersVaultToLocal(t *testing.T) {
+	entry := hosts.Entry{Alias: "vaultbox", HostName: "10.9.9.9", Source: "vw:work", AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), unlockedVaultDeps(), nil)
+	app.SetSSHConfigPathForTest(filepath.Join(t.TempDir(), "config"))
+	app.HostPane().Refresh()
+
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlT, 0, tcell.ModNone))
+
+	if !app.InCopyModal() {
+		t.Fatal("Ctrl+T on a vault entry must open the copy modal")
+	}
+	cm := app.CopyModal()
+	if got := cm.CopyDirection(); got != "vault → local" {
+		t.Errorf("direction = %q, want 'vault → local'", got)
+	}
+	if got := cm.CopyTargetAlias(); got != "vaultbox" {
+		t.Errorf("alias = %q, want vaultbox", got)
+	}
+	if !strings.Contains(cm.Text(), "written to disk") {
+		t.Errorf("vault→local modal must warn about disk write: %q", cm.Text())
+	}
+}
+
+func TestApp_CtrlT_FileEntryOffersLocalToVault(t *testing.T) {
+	entry := hosts.Entry{Alias: "localbox", HostName: "10.7.7.7", Source: "file", AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), unlockedVaultDeps(), nil)
+	app.HostPane().Refresh()
+
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlT, 0, tcell.ModNone))
+
+	if !app.InCopyModal() {
+		t.Fatal("Ctrl+T on a file entry must open the copy modal when a vault is unlocked")
+	}
+	cm := app.CopyModal()
+	if got := cm.CopyDirection(); got != "local → vault" {
+		t.Errorf("direction = %q, want 'local → vault'", got)
+	}
+	if !strings.Contains(cm.Text(), "vw:work") {
+		t.Errorf("local→vault modal must name the target vault: %q", cm.Text())
+	}
+}
+
+func TestApp_CtrlT_FileEntryWithoutVaultIsNoOp(t *testing.T) {
+	entry := hosts.Entry{Alias: "localbox", HostName: "10.7.7.7", Source: "file", AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{}, nil)
+	app.HostPane().Refresh()
+
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlT, 0, tcell.ModNone))
+
+	if app.InCopyModal() {
+		t.Error("Ctrl+T with no unlocked vault must not open the copy modal")
+	}
+}
+
+func TestApp_CtrlT_NoSelectionIsNoOp(t *testing.T) {
+	app := tviewui.New(hosts.NewList(nil), tviewui.Deps{}, nil)
+	app.HostPane().Refresh()
+
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlT, 0, tcell.ModNone))
+
+	if app.InCopyModal() {
+		t.Error("Ctrl+T with no selection must not open the copy modal")
+	}
+}
+
+func TestApp_CopyModalConfirmCopiesVaultEntry(t *testing.T) {
+	app, _, _, dir := vaultCopyFixture(t)
+	app.HostPane().Refresh()
+
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlT, 0, tcell.ModNone))
+	if !app.InCopyModal() {
+		t.Fatal("precondition: Ctrl+T must open the copy modal")
+	}
+	app.ConfirmCopy()
+
+	if app.InCopyModal() {
+		t.Error("confirming the copy must close the modal")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "id_ed25519_vaultbox")); err != nil {
+		t.Errorf("expected exported key file: %v", err)
+	}
+}
