@@ -74,6 +74,7 @@ type App struct {
 	inEdit        bool
 	inDelete      bool
 	inCopy        bool
+	inInfo        bool
 	inAddVault    bool
 	inScope       bool
 	inHelp        bool
@@ -814,21 +815,25 @@ func (a *App) showEditModal(entry hosts.Entry) {
 }
 
 func (a *App) showInfoModal(msg string) {
+	closeInfo := func() {
+		a.inInfo = false
+		a.overlay.RemovePage("info")
+		a.app.SetFocus(a.hostPane.Primitive())
+	}
 	info := tview.NewModal().
 		SetText(msg).
 		AddButtons([]string{"OK"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			a.overlay.RemovePage("info")
-			a.app.SetFocus(a.hostPane.Primitive())
+			closeInfo()
 		})
 	info.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape || event.Key() == tcell.KeyEnter || event.Rune() == ' ' {
-			a.overlay.RemovePage("info")
-			a.app.SetFocus(a.hostPane.Primitive())
+			closeInfo()
 			return nil
 		}
 		return event
 	})
+	a.inInfo = true
 	a.overlay.AddPage("info", info, true, true)
 	a.app.SetFocus(info)
 }
@@ -897,34 +902,20 @@ func (a *App) handleCreateFileConnection(params CreateParams) error {
 		authKind = "key"
 	}
 
+	configPath, sshDir, err := a.localSSHConfig()
+	if err != nil {
+		return err
+	}
+
 	if authKind == "key" {
 		algo := params.KeyAlgo
 		if algo == "" {
 			algo = "ed25519"
 		}
-		var sshDir string
-		if a.sshConfigPath != "" {
-			sshDir = filepath.Dir(a.sshConfigPath)
-		} else {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("resolve home dir: %w", err)
-			}
-			sshDir = filepath.Join(home, ".ssh")
-		}
 		identityPath = filepath.Join(sshDir, fmt.Sprintf("id_%s_%s", algo, params.Alias))
 		if err := sshconfig.GenerateKeyToFile(algo, identityPath); err != nil {
 			return fmt.Errorf("generate key: %w", err)
 		}
-	}
-
-	configPath := a.sshConfigPath
-	if configPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("resolve home dir: %w", err)
-		}
-		configPath = filepath.Join(home, ".ssh", "config")
 	}
 
 	cfg := sshconfig.HostConfig{
@@ -1058,21 +1049,16 @@ func (a *App) handleUpdateFileConnection(oldEntry hosts.Entry, params CreatePara
 
 	identityPath := oldEntry.IdentityFile
 
+	configPath, sshDir, err := a.localSSHConfig()
+	if err != nil {
+		return err
+	}
+
 	if oldEntry.AuthKind == "password" && authKind == "key" {
 		// Switched from password to key auth -> generate new keypair
 		algo := params.KeyAlgo
 		if algo == "" {
 			algo = "ed25519"
-		}
-		var sshDir string
-		if a.sshConfigPath != "" {
-			sshDir = filepath.Dir(a.sshConfigPath)
-		} else {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("resolve home dir: %w", err)
-			}
-			sshDir = filepath.Join(home, ".ssh")
 		}
 		identityPath = filepath.Join(sshDir, fmt.Sprintf("id_%s_%s", algo, params.Alias))
 		if err := sshconfig.GenerateKeyToFile(algo, identityPath); err != nil {
@@ -1081,15 +1067,6 @@ func (a *App) handleUpdateFileConnection(oldEntry hosts.Entry, params CreatePara
 	} else if oldEntry.AuthKind != "password" && authKind == "password" {
 		// Switched from key to password -> drop IdentityFile directive (keep files on disk)
 		identityPath = ""
-	}
-
-	configPath := a.sshConfigPath
-	if configPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("resolve home dir: %w", err)
-		}
-		configPath = filepath.Join(home, ".ssh", "config")
 	}
 
 	cfg := sshconfig.HostConfig{
@@ -1888,7 +1865,7 @@ func (a *App) HardCloseActiveSession() {
 //   - Setup / quit / disconnect / create / edit / delete / copy / scope modal:
 //     passed through so those modals handle their own keys.
 func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
-	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inCopy || a.inScope || a.inHelp || a.inAddVault {
+	if a.inSetup || a.inQuit || a.inDisconnect || a.inCreate || a.inEdit || a.inDelete || a.inCopy || a.inInfo || a.inScope || a.inHelp || a.inAddVault {
 		return event
 	}
 

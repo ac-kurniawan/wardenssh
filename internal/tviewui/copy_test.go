@@ -515,3 +515,77 @@ func TestApp_HandleCopyVaultToLocal_RefusesInjectingFields(t *testing.T) {
 		t.Error("refused export must not write a host block")
 	}
 }
+
+// A failed config append must leave no key files behind (no orphaned identity).
+func TestApp_HandleCopyVaultToLocal_RollsBackOnAppendFailure(t *testing.T) {
+	app, entry, _, dir := vaultCopyFixture(t)
+	keyPath := filepath.Join(dir, "id_ed25519_vaultbox")
+	// An existing directory at the config path makes AppendHostEntry fail.
+	configPath := filepath.Join(dir, "as-dir")
+	if err := os.Mkdir(configPath, 0700); err != nil {
+		t.Fatalf("mkdir config path: %v", err)
+	}
+	app.SetSSHConfigPathForTest(configPath)
+
+	if err := app.HandleCopyVaultToLocal(entry); err == nil {
+		t.Fatal("expected append failure, got nil")
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Error("private key must be rolled back when the config append fails")
+	}
+	if _, err := os.Stat(keyPath + ".pub"); !os.IsNotExist(err) {
+		t.Error("public key must be rolled back when the config append fails")
+	}
+}
+
+// A vault that already has an item with the same name is refused, never
+// duplicated.
+func TestApp_HandleCopyLocalToVault_RefusesDuplicateVaultItem(t *testing.T) {
+	privPEM, _, _, err := sshconfig.GenerateKeyPair("ed25519")
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "id_ed25519_dup")
+	if err := sshconfig.WriteKeyToFile(keyPath, []byte(privPEM)); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	src := vault.NewFakeSource("vw:work", []vault.Item{{Name: "dup", HostName: "10.0.0.1"}})
+	entry := hosts.Entry{Alias: "dup", HostName: "10.0.0.1", Source: "file", IdentityFile: keyPath, AuthKind: "key"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{
+		VaultCli: vault.NewFakeClient(src),
+	}, nil)
+
+	if err := app.HandleCopyLocalToVault(entry, "vw:work"); err == nil {
+		t.Fatal("expected duplicate-item refusal, got nil")
+	}
+}
+
+// A password-credential local entry has no key file to copy.
+func TestApp_HandleCopyLocalToVault_RefusesPasswordEntry(t *testing.T) {
+	entry := hosts.Entry{Alias: "pwbox", Source: "file", HostName: "10.0.0.1", AuthKind: "password"}
+	app := tviewui.New(hosts.NewList([]hosts.Entry{entry}), tviewui.Deps{}, nil)
+
+	if err := app.HandleCopyLocalToVault(entry, "vw:work"); err == nil {
+		t.Fatal("expected refusal for password entry, got nil")
+	}
+}
+
+// The info overlay owns the keys while it is open: Ctrl+T must not stack a copy
+// modal on top of it.
+func TestApp_CtrlT_IgnoredWhileInfoModalOpen(t *testing.T) {
+	entry := hosts.Entry{Alias: "localbox", HostName: "10.7.7.7", Source: "file", AuthKind: "key"}
+	hl := hosts.NewList([]hosts.Entry{entry})
+	app := tviewui.New(hl, tviewui.Deps{}, nil) // no vault -> Ctrl+T explains why
+	app.HostPane().Refresh()
+
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlT, 0, tcell.ModNone))
+	if !app.InInfoModal() {
+		t.Fatal("precondition: Ctrl+T with no vault must open the info overlay")
+	}
+
+	// Ctrl+T again while the overlay is up must not replace it with the copy modal.
+	app.HandleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlT, 0, tcell.ModNone))
+	if app.InCopyModal() {
+		t.Error("Ctrl+T must not open the copy modal over the info overlay")
+	}
+}

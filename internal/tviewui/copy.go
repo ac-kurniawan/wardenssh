@@ -12,11 +12,16 @@ import (
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/sshconfig"
 	"github.com/ac-kurniawan/wardenssh/internal/vault"
+	"github.com/ac-kurniawan/wardenssh/internal/vaultadapter"
 	"github.com/ac-kurniawan/wardenssh/internal/vaultclient"
 )
 
 // InCopyModal reports whether the copy confirmation modal is open.
 func (a *App) InCopyModal() bool { return a.inCopy }
+
+// InInfoModal reports whether the info overlay is open (it owns the keys while
+// it is up, so no other modal may stack on top of it).
+func (a *App) InInfoModal() bool { return a.inInfo }
 
 // CopyModal returns the current CopyModal instance (nil when closed).
 func (a *App) CopyModal() *CopyModal { return a.copyModal }
@@ -40,7 +45,7 @@ func (a *App) CloseCopyModal() {
 // exports its private key to ~/.ssh/config. The modal states exactly what the
 // copy touches before anything is written.
 func (a *App) showCopyModal(entry hosts.Entry) {
-	if a.inCopy || a.inDelete || a.inEdit || a.inCreate {
+	if a.inCopy || a.inDelete || a.inEdit || a.inCreate || a.inInfo {
 		return
 	}
 
@@ -56,6 +61,10 @@ func (a *App) showCopyModal(entry hosts.Entry) {
 		return
 	}
 
+	if !a.vaultSourceUnlocked(entry.Source) {
+		a.showInfoModal(fmt.Sprintf("Vault %q is not unlocked.\n\nRe-unlock it first.", entry.Source))
+		return
+	}
 	configPath, _, err := a.localSSHConfig()
 	if err != nil {
 		a.showInfoModal(fmt.Sprintf("Copy failed.\n\n%v", err))
@@ -102,11 +111,23 @@ func (a *App) copyVaultTarget() string {
 	return ""
 }
 
-// vaultSourceUnlocked reports whether name resolves to a source with a live
-// vault session.
+// vaultSourceUnlocked reports whether name resolves to a source that can
+// decrypt right now: a real vault source needs a live session, while other
+// vault.Client implementations (fakes) decide for themselves.
 func (a *App) vaultSourceUnlocked(name string) bool {
-	source, sess, _, _, err := a.resolveVaultTarget(name)
-	return err == nil && source != nil && sess != nil
+	if a.deps.VaultCli == nil {
+		return false
+	}
+	for _, src := range a.deps.VaultCli.Sources() {
+		if src.Name() != name {
+			continue
+		}
+		if real, ok := src.(*vaultadapter.Source); ok {
+			return real.Session() != nil
+		}
+		return true
+	}
+	return false
 }
 
 // HandleCopyVaultToLocal exports a vault host entry to ~/.ssh/config: it
