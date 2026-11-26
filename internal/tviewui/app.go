@@ -168,6 +168,7 @@ func New(hostList *hosts.List, deps Deps, vaults []config.Vault) *App {
 
 	a.right = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.tabBar.Primitive(), 1, 0, false).
+		AddItem(a.sessionHeader.Primitive(), 1, 0, false).
 		AddItem(a.termPane.Primitive(), 0, 1, false)
 
 	// Content: column flex. Left takes full width when no session; right
@@ -262,7 +263,6 @@ func (a *App) FocusTerminal() {
 	a.footer.SetMode("terminal")
 	a.hostPane.SetFocused(false)
 	a.termPane.SetFocused(true)
-	a.termPane.SetSessionTitleState(true)
 	a.syncSessionChrome()
 	a.app.SetFocus(a.termPane.Primitive())
 }
@@ -275,7 +275,6 @@ func (a *App) FocusHostList() {
 	a.footer.SetMode("host")
 	a.hostPane.SetFocused(true)
 	a.termPane.SetFocused(false)
-	a.termPane.SetSessionTitleState(false)
 	a.syncSessionChrome()
 	a.app.SetFocus(a.hostPane.Primitive())
 }
@@ -1762,19 +1761,10 @@ func (a *App) syncSessionChrome() {
 			a.sessionHeader.Clear()
 		} else {
 			var host, port string
-			var started time.Time
 			if e, found := a.findEntry(activeAlias, activeSource); found {
 				host = e.HostName
 				port = e.Port
 			}
-			// Pull start time from termPane for uptime
-			if alias2, source2, ok := a.termPane.ActiveEntry(); ok && alias2 == activeAlias && source2 == activeSource {
-				// Use termPane's internal started via ActiveTitle? Fallback to now-0 for ticker refresh
-				_ = alias2
-			}
-			// Use zero duration for now — ticker in termPane will refresh title; header refreshes on sync only.
-			// For precise uptime, read from termPane's session (best-effort).
-			_ = started
 			if port == "" {
 				port = "22"
 			}
@@ -1818,6 +1808,24 @@ func isCtrlShiftQ(event *tcell.EventKey) bool {
 	if event.Modifiers()&tcell.ModCtrl != 0 && event.Modifiers()&tcell.ModShift != 0 {
 		r := event.Rune()
 		if r == 'Q' || r == 'q' || r == 17 || r == 0x11 {
+			return true
+		}
+	}
+	return false
+}
+
+// isCtrlShiftC checks whether a key event represents Ctrl+Shift+C, the
+// advertised copy chord. Two encodings reach us: tcell's normalized KeyCtrlC
+// with ModShift, and the KeyRune + Ctrl|Shift pair that kitty CSI-u and xterm
+// modifyOtherKeys produce. Both must be caught here — an uncaught KeyRune would
+// be forwarded to the remote as a literal "c".
+func isCtrlShiftC(event *tcell.EventKey) bool {
+	if event.Key() == tcell.KeyCtrlC && event.Modifiers()&tcell.ModShift != 0 {
+		return true
+	}
+	if event.Modifiers()&tcell.ModCtrl != 0 && event.Modifiers()&tcell.ModShift != 0 {
+		switch event.Rune() {
+		case 'c', 'C', 0x03:
 			return true
 		}
 	}
@@ -1902,6 +1910,13 @@ func (a *App) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyPgUp && event.Modifiers()&tcell.ModCtrl != 0 {
 			a.termPane.CycleSession(-1)
 			a.syncSessionChrome()
+			return nil
+		}
+		// Ctrl+Shift+C is the advertised copy chord: copy the selection when
+		// there is one and stay silent otherwise. It is always consumed so the
+		// chord neither reaches the remote as a literal "c" nor fires SIGINT.
+		if isCtrlShiftC(event) {
+			a.termPane.CopyActiveSelection()
 			return nil
 		}
 		switch event.Key() {

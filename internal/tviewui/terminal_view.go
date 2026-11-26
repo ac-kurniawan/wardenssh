@@ -34,8 +34,13 @@ type terminalView struct {
 	// writing the title from the PTY read goroutine would race the renderer.
 	titleBase string
 
-	// titleMu guards titleBase, which the chrome writes from the UI goroutine
-	// and Draw reads from the UI goroutine, but tests read directly.
+	// drawnTitle is the last title handed to the box. Draw runs every frame but
+	// the composed title only changes when the base or the scroll offset does,
+	// so comparing against it skips the per-frame SetTitle.
+	drawnTitle string
+
+	// titleMu guards titleBase and drawnTitle, which the chrome writes from the
+	// UI goroutine and Draw reads from the UI goroutine, but tests read directly.
 	titleMu sync.Mutex
 }
 
@@ -123,8 +128,21 @@ func (s *terminalView) TerminalTitle() string {
 // tview draws the box title before any draw function runs, so the title must be
 // in place beforehand. This runs on the UI goroutine — the only one allowed to
 // write tview state — so scrolling from the PTY read goroutine never touches it.
+//
+// The composed title is cached: Draw runs on every frame, but the title only
+// changes when the chrome rewrites the base or the scroll offset moves, and
+// calling SetTitle with an unchanged string is pure per-frame churn.
 func (s *terminalView) Draw(screen tcell.Screen) {
-	s.SetTitle(" " + s.TerminalTitle() + " ")
+	title := " " + s.TerminalTitle() + " "
+	s.titleMu.Lock()
+	changed := title != s.drawnTitle
+	if changed {
+		s.drawnTitle = title
+	}
+	s.titleMu.Unlock()
+	if changed {
+		s.SetTitle(title)
+	}
 	s.View.Draw(screen)
 }
 
