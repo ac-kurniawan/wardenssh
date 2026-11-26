@@ -21,8 +21,9 @@ const (
 )
 
 // SessionHeader is the bar directly below the tab strip and above the
-// terminal viewport — mirrors index-tui.html's session header:
-// "● shopee-2 (20.198.88.91) [ACTIVE SESSION] [ 42 ms]  [Copy][Disconnect][Force Kill]"
+// terminal viewport. It owns the per-session fields the terminal's border title
+// does not repeat:
+// "● shopee-2 (20.198.88.91) local [ACTIVE SESSION] [ 42 ms] • Agent: RAM-only"
 type SessionHeader struct {
 	view *tview.TextView
 
@@ -210,9 +211,9 @@ func (h *SessionHeader) renderInternal(alias, host, source string, focused bool,
 	left := fmt.Sprintf("%s [#F8FAFC]%s[-] [#64748B](%s)[-]%s [#0F1E14:#22C55E] %s [-]%s%s",
 		dot, tview.Escape(alias), tview.Escape(addr), sourcePill, state, ping, agent)
 
-	right := " [#334155]⎘ Copy[-] [#334155]⏻ Disconnect[-] [#7C4D00]Force Kill[-]"
-	text := left + right
-	h.view.SetText(text)
+	// No action affordances here: the footer already advertises the real keys,
+	// and a label with no click handler under it reads as a broken control.
+	h.view.SetText(left)
 }
 
 // pingLoop runs the periodic probe for the active target.

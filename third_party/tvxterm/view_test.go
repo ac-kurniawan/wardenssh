@@ -680,3 +680,50 @@ func BenchmarkSnapshotAt(b *testing.B) {
 		_ = e.SnapshotAt(0)
 	}
 }
+
+// TestKeyToBytesCtrlShiftRuneIsControlByte: a Ctrl-modified KeyRune must never
+// encode as its printable character. Kitty CSI-u / xterm modifyOtherKeys report
+// Ctrl+Shift+C as KeyRune 'c'|'C' with Ctrl|Shift; encoding it as "c" typed a
+// literal 'c' into the remote shell.
+func TestKeyToBytesCtrlShiftRuneIsControlByte(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ev   *tcell.EventKey
+		want byte
+	}{
+		{"lower", tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModCtrl|tcell.ModShift), 0x03},
+		{"upper", tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModCtrl|tcell.ModShift), 0x03},
+		{"ctrl-only", tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModCtrl), 0x03},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := keyToBytes(tc.ev, false)
+			if !ok {
+				t.Fatalf("expected the event to be handled")
+			}
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("encoding = %q, want the control byte %#x", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestKeyToBytesCtrlRuneNonLetterDropped: a Ctrl chord on a non-letter rune has
+// no control byte, so it must be dropped rather than emitted as printable text.
+func TestKeyToBytesCtrlRuneNonLetterDropped(t *testing.T) {
+	ev := tcell.NewEventKey(tcell.KeyRune, '1', tcell.ModCtrl)
+	if got, ok := keyToBytes(ev, false); ok {
+		t.Fatalf("Ctrl+1 encoded as %q, want it dropped", got)
+	}
+}
+
+// TestKeyToBytesPlainRuneUnchanged: the guard above must not affect unmodified
+// typing.
+func TestKeyToBytesPlainRuneUnchanged(t *testing.T) {
+	got, ok := keyToBytes(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), false)
+	if !ok {
+		t.Fatal("expected plain rune to be handled")
+	}
+	if string(got) != "c" {
+		t.Fatalf("plain rune = %q, want %q", got, "c")
+	}
+}

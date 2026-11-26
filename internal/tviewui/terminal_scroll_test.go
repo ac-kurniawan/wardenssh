@@ -759,9 +759,9 @@ func TestTerminalTitleShowsScrollPosition(t *testing.T) {
 	}
 }
 
-// TestTerminalTitleMarkerSurvivesSessionChrome: the pane's session chrome sets
-// the full title (uptime, ping, state) and must keep the scroll marker, or the
-// marker would vanish on the next uptime tick.
+// TestTerminalTitleMarkerSurvivesSessionChrome: the pane's session chrome
+// writes the identity title onto the view and must keep the scroll marker, or
+// the marker would vanish on the next chrome rewrite (session switch).
 func TestTerminalTitleMarkerSurvivesSessionChrome(t *testing.T) {
 	view, _ := fedView(t)
 	defer view.Close()
@@ -779,13 +779,41 @@ func TestTerminalTitleMarkerSurvivesSessionChrome(t *testing.T) {
 		t.Fatal("precondition: expected the view to be scrolled up")
 	}
 	want := fmt.Sprintf("[↑ %d]", offset)
-	pane.SetSessionTitleState(true)
 
 	if got := view.TerminalTitle(); !strings.Contains(got, want) {
 		t.Fatalf("title after the chrome rewrite = %q, want it to still contain %q", got, want)
 	}
 	if got := pane.ActiveTitle(); !strings.Contains(got, want) {
 		t.Fatalf("ActiveTitle() = %q, want it to report the scroll marker", got)
+	}
+}
+
+// TestTerminalDrawnTitleNeverStale: Draw caches the composed title, so a cache
+// hit must not hide a change in the base title or the scroll offset. Each
+// transition here re-renders and reads the border row the user sees.
+func TestTerminalDrawnTitleNeverStale(t *testing.T) {
+	view, _ := fedView(t)
+	defer view.Close()
+	view.SetRect(0, 0, 80, 6)
+
+	if got := drawnTitle(t, view); !strings.Contains(got, "host-a") {
+		t.Fatalf("drawn title = %q, want the fixture's base title", got)
+	}
+	// A chrome rewrite replaces the base; the next frame must show it.
+	view.SetTerminalTitle("💻 other-host")
+	if got := drawnTitle(t, view); !strings.Contains(got, "other-host") {
+		t.Fatalf("drawn title after a base rewrite = %q, want the new identity", got)
+	}
+	// Scrolling composes the marker on top of the cached base.
+	view.ScrollbackUp(3)
+	offset, _ := view.ScrollbackStatus()
+	if got := drawnTitle(t, view); !strings.Contains(got, fmt.Sprintf("[↑ %d]", offset)) {
+		t.Fatalf("drawn title after scrolling = %q, want the marker", got)
+	}
+	// Returning to the live screen drops the marker again.
+	view.ScrollbackBottom()
+	if got := drawnTitle(t, view); strings.Contains(got, "↑") || !strings.Contains(got, "other-host") {
+		t.Fatalf("drawn title at the bottom = %q, want the plain base", got)
 	}
 }
 

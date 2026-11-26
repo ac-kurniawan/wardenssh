@@ -2,23 +2,16 @@ package tviewui
 
 import (
 	"fmt"
-	"net"
 	"os/exec"
 	"sync"
 	"time"
 
 	tvxterm "github.com/ac-kurniawan/wardenssh/third_party/tvxterm"
 	"github.com/gdamore/tcell/v2"
-	"github.com/mattn/go-runewidth"
 	"github.com/rivo/tview"
 
 	"github.com/ac-kurniawan/wardenssh/internal/hosts"
 	"github.com/ac-kurniawan/wardenssh/internal/session"
-)
-
-const (
-	termPingInterval    = 3 * time.Second
-	termPingDialTimeout = 1500 * time.Millisecond
 )
 
 // SessionKey uniquely identifies a host session across sources (Q11/C
@@ -29,18 +22,13 @@ func SessionKey(alias, source string) string {
 
 // terminalSession is one running ssh session with its own terminal view + PTY.
 type terminalSession struct {
-	key        string
-	alias      string
-	source     string
-	host       string
-	port       string
-	started    time.Time
-	viewTitle  string
-	view       tview.Primitive
-	backend    *PtyBackend
-	pingSlot   string // "[ 42 ms]" / "[ ·· ms]" / "[--- ms]"
-	pingColor  string
-	pingTarget string
+	key       string
+	alias     string
+	source    string
+	started   time.Time
+	viewTitle string
+	view      tview.Primitive
+	backend   *PtyBackend
 }
 
 // TerminalPane is the right pane: a tview.Pages hosting one tvxterm.View per
@@ -48,26 +36,15 @@ type terminalSession struct {
 // session's view is shown, but background sessions keep running and draining.
 // A "status" page is shown when no session exists.
 type TerminalPane struct {
-	app    *tview.Application
-	flex   *tview.Flex
-	pages  *tview.Pages
-	status *tview.TextView
-
-	mu           sync.Mutex
-	sessions     map[string]*terminalSession
-	order        []string // insertion order, for "most recent" selection
-	active       string   // key of the displayed session
-	testRunning  bool
-	titleFocused bool // last SetSessionTitleState value (for the uptime ticker)
-
-	titleTicker *time.Ticker
-	stopTitle   chan struct{}
-	tickerOn    bool
-
-	pingTicker *time.Ticker
-	pingStop   chan struct{}
-	pingTarget string
-	dialFn     func(host, port string) (int, bool)
+	app         *tview.Application
+	flex        *tview.Flex
+	pages       *tview.Pages
+	status      *tview.TextView
+	mu          sync.Mutex
+	sessions    map[string]*terminalSession
+	order       []string // insertion order, for "most recent" selection
+	active      string   // key of the displayed session
+	testRunning bool
 }
 
 // NewTerminalPane creates the terminal pane. The app reference is used for
@@ -275,86 +252,25 @@ func (p *TerminalPane) EntryForKey(key string) (alias, source string, ok bool) {
 func (p *TerminalPane) SetSessionForTest(key, alias, source string) {
 	p.mu.Lock()
 	p.sessions[key] = &terminalSession{
-		key: key, alias: alias, source: source,
-		host: "1.2.3.4", port: "22", started: time.Now(),
-		pingSlot: "[ ·· ms]", pingTarget: "1.2.3.4:22",
+		key: key, alias: alias, source: source, started: time.Now(),
 	}
 	p.order = append(p.order, key)
 	p.active = key
 	p.mu.Unlock()
-	p.setSessionTitle(key, false)
-}
-
-// SetSessionWithHostForTest registers a session with explicit host/port (tests).
-func (p *TerminalPane) SetSessionWithHostForTest(key, alias, host, port, source string) {
-	if port == "" {
-		port = "22"
-	}
-	p.mu.Lock()
-	p.sessions[key] = &terminalSession{
-		key: key, alias: alias, source: source,
-		host: host, port: port, started: time.Now(),
-		pingSlot: "[ ·· ms]", pingTarget: net.JoinHostPort(host, port),
-	}
-	p.order = append(p.order, key)
-	p.active = key
-	p.mu.Unlock()
-	p.setSessionTitle(key, false)
+	p.setSessionTitle(key)
 }
 
 // FormatSessionTitleForTest exposes the session-title formatter (tests only).
-func FormatSessionTitleForTest(alias, host, state string, up time.Duration) string {
-	return formatSessionTitle(alias, host, state, up)
+func FormatSessionTitleForTest(alias string) string {
+	return formatSessionTitle(alias)
 }
 
-// FormatSessionTitleWithSourceForTest exposes the source-aware formatter (tests only).
-func FormatSessionTitleWithSourceForTest(alias, host, source, state string, up time.Duration) string {
-	return formatSessionTitleWithSource(alias, host, source, state, up)
-}
-
-// formatSessionTitle composes the terminal pane title: "💻 alias (host)
-// [CONNECTED/ACTIVE SESSION] · Up: <elapsed>". The host is tail-truncated so a
-// long address never clips the state badge.
-func formatSessionTitle(alias, host, state string, up time.Duration) string {
-	return formatSessionTitleWithSource(alias, host, "file", state, up)
-}
-
-// formatSessionTitleWithSource adds a RAM-only agent hint for vault-sourced
-// sessions so the zero-disk guarantee is surfaced in the title chrome (mirrors
-// index-tui.html "Agent: ed25519 • RAM only").
-func formatSessionTitleWithSource(alias, host, source, state string, up time.Duration) string {
-	addr := host
-	if runewidth.StringWidth(addr) > 30 {
-		addr = runewidth.Truncate(addr, 30, "…")
-	}
-	upStr := formatUptime(up)
-	base := fmt.Sprintf("💻 %s (%s) [%s] · Up: %s", alias, addr, state, upStr)
-	if source != "file" && source != "" {
-		base += " • Agent: RAM-only"
-	}
-	return base
-}
-
-// formatUptime renders a duration compactly: "0s", "1m30s", "14d 6h".
-func formatUptime(up time.Duration) string {
-	total := int64(up.Seconds())
-	if total < 0 {
-		total = 0
-	}
-	days := total / 86400
-	hours := (total % 86400) / 3600
-	mins := (total % 3600) / 60
-	secs := total % 60
-	switch {
-	case days > 0:
-		return fmt.Sprintf("%dd %dh", days, hours)
-	case hours > 0:
-		return fmt.Sprintf("%dh%dm", hours, mins)
-	case mins > 0:
-		return fmt.Sprintf("%dm%ds", mins, secs)
-	default:
-		return fmt.Sprintf("%ds", secs)
-	}
+// formatSessionTitle composes the terminal pane's border title: the session
+// identity alone. State, uptime, ping and the agent badge belong to the
+// SessionHeader row above the terminal — repeating them here is what made the
+// title overflow into the tab bar on narrow panes.
+func formatSessionTitle(alias string) string {
+	return "💻 " + alias
 }
 
 // ActiveTitle returns the title of the displayed session, including the scroll
@@ -385,69 +301,21 @@ func (p *TerminalPane) ActiveUptime() time.Duration {
 	return time.Since(s.started)
 }
 
-// SetSessionStartForTest rewinds a session's start time (tests only), so the
-// uptime telemetry can be exercised deterministically.
-func (p *TerminalPane) SetSessionStartForTest(key string, started time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if s, ok := p.sessions[key]; ok {
-		s.started = started
-	}
-}
-
-// SetSessionTitleState updates the displayed session's title state badge:
-// "ACTIVE SESSION" when the terminal has focus, "CONNECTED" otherwise. The
-// focused flag is remembered so the uptime ticker can refresh the title.
-func (p *TerminalPane) SetSessionTitleState(focused bool) {
-	p.mu.Lock()
-	p.titleFocused = focused
-	active := p.active
-	s := p.sessions[active]
-	p.mu.Unlock()
-	if s == nil {
-		return
-	}
-	p.setSessionTitle(active, focused)
-}
-
-// RefreshActiveTitle recomputes the displayed session's title from the current
-// time, so "Up:" telemetry keeps ticking instead of freezing at session start.
-// Called by the 1s title ticker and directly by tests.
-func (p *TerminalPane) RefreshActiveTitle() {
-	p.mu.Lock()
-	active := p.active
-	focused := p.titleFocused
-	s := p.sessions[active]
-	p.mu.Unlock()
-	if s == nil {
-		return
-	}
-	p.setSessionTitle(active, focused)
-}
-
-// setSessionTitle writes the mockup title onto a session's terminal view.
-// Callers may hold p.mu; viewTitle is updated under the lock.
-func (p *TerminalPane) setSessionTitle(key string, focused bool) {
+// setSessionTitle writes the session's identity onto its terminal view's border
+// title. Callers may hold p.mu; viewTitle is updated under the lock.
+//
+// The title carries identity only: state, uptime, ping and the agent badge live
+// on the SessionHeader row, and repeating them here is what ran the title into
+// the tab bar on narrow panes.
+func (p *TerminalPane) setSessionTitle(key string) {
 	p.mu.Lock()
 	s := p.sessions[key]
 	if s == nil {
 		p.mu.Unlock()
 		return
 	}
-	state := "CONNECTED"
-	if focused {
-		state = "ACTIVE SESSION"
-	}
-	up := time.Duration(0)
-	if s.started.UnixNano() != 0 {
-		up = time.Now().Sub(s.started)
-	}
-	base := formatSessionTitleWithSource(s.alias, s.host, s.source, state, up)
-	if s.pingSlot != "" {
-		base += " · " + s.pingSlot
-	}
-	s.viewTitle = base
-	title := s.viewTitle
+	title := formatSessionTitle(s.alias)
+	s.viewTitle = title
 	view := s.view
 	p.mu.Unlock()
 
@@ -457,174 +325,6 @@ func (p *TerminalPane) setSessionTitle(key string, focused bool) {
 		// cannot silently drop it.
 		b.SetTerminalTitle(title)
 	}
-}
-
-// --- Ping helpers for terminal title (mirrors sessionheader ping) ---
-
-func (p *TerminalPane) getTerminalDialFn() func(host, port string) (int, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.dialFn
-}
-
-func (p *TerminalPane) terminalDial(host, port string) (int, bool) {
-	if fn := p.getTerminalDialFn(); fn != nil {
-		return fn(host, port)
-	}
-	start := time.Now()
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), termPingDialTimeout)
-	elapsed := int(time.Since(start).Milliseconds())
-	if err != nil {
-		return 0, false
-	}
-	_ = conn.Close()
-	if elapsed > 999 {
-		elapsed = 999
-	}
-	return elapsed, true
-}
-
-func (p *TerminalPane) startPingForActive() {
-	p.mu.Lock()
-	active := p.active
-	s := p.sessions[active]
-	if s == nil {
-		p.mu.Unlock()
-		return
-	}
-	host := s.host
-	port := s.port
-	if port == "" {
-		port = "22"
-	}
-	target := net.JoinHostPort(host, port)
-	// restart if target changed
-	if p.pingTarget == target && p.pingTicker != nil {
-		p.mu.Unlock()
-		return
-	}
-	if p.pingStop != nil {
-		close(p.pingStop)
-		p.pingStop = nil
-	}
-	if p.pingTicker != nil {
-		p.pingTicker.Stop()
-	}
-	s.pingSlot = "[ ·· ms]"
-	s.pingTarget = target
-	p.pingTarget = target
-	stopCh := make(chan struct{})
-	ticker := time.NewTicker(termPingInterval)
-	p.pingStop = stopCh
-	p.pingTicker = ticker
-	p.mu.Unlock()
-	// render probing immediately
-	p.RefreshActiveTitle()
-	go p.terminalPingLoop(host, port, stopCh, ticker)
-}
-
-func (p *TerminalPane) stopPingLoop() {
-	p.mu.Lock()
-	if p.pingStop != nil {
-		close(p.pingStop)
-		p.pingStop = nil
-	}
-	if p.pingTicker != nil {
-		p.pingTicker.Stop()
-		p.pingTicker = nil
-	}
-	p.pingTarget = ""
-	p.mu.Unlock()
-}
-
-func (p *TerminalPane) terminalPingLoop(host, port string, stopCh chan struct{}, ticker *time.Ticker) {
-	p.terminalDoProbe(host, port, stopCh)
-	for {
-		select {
-		case <-ticker.C:
-			p.terminalDoProbe(host, port, stopCh)
-		case <-stopCh:
-			return
-		}
-	}
-}
-
-func (p *TerminalPane) terminalDoProbe(host, port string, stopCh chan struct{}) {
-	ms, ok := p.terminalDial(host, port)
-	p.mu.Lock()
-	if p.pingStop != stopCh || p.pingTarget != net.JoinHostPort(host, port) {
-		p.mu.Unlock()
-		return
-	}
-	active := p.active
-	s := p.sessions[active]
-	if s == nil || s.host != host {
-		p.mu.Unlock()
-		return
-	}
-	var slot string
-	if !ok {
-		slot = "[--- ms]"
-	} else {
-		if ms < 0 {
-			ms = 0
-		}
-		if ms > 999 {
-			ms = 999
-		}
-		slot = fmt.Sprintf("[%3d ms]", ms)
-	}
-	s.pingSlot = slot
-	s.pingTarget = net.JoinHostPort(host, port)
-	p.mu.Unlock()
-	// refresh title on UI thread
-	if p.app != nil {
-		p.app.QueueUpdateDraw(func() {
-			p.RefreshActiveTitle()
-		})
-	} else {
-		p.RefreshActiveTitle()
-	}
-}
-
-// SetDialFuncForTest injects a mock dial func for terminal ping (tests).
-func (p *TerminalPane) SetDialFuncForTest(fn func(host, port string) (int, bool)) {
-	p.mu.Lock()
-	p.dialFn = fn
-	p.mu.Unlock()
-}
-
-// SetPingResultForTest injects a ping result for the active session (tests).
-func (p *TerminalPane) SetPingResultForTest(ms int, ok bool) {
-	p.mu.Lock()
-	active := p.active
-	s := p.sessions[active]
-	if s == nil {
-		p.mu.Unlock()
-		return
-	}
-	var slot string
-	if !ok {
-		slot = "[--- ms]"
-	} else {
-		if ms > 999 {
-			ms = 999
-		}
-		slot = fmt.Sprintf("[%3d ms]", ms)
-	}
-	s.pingSlot = slot
-	p.mu.Unlock()
-	p.RefreshActiveTitle()
-}
-
-// PingSlotForTest returns the active session's ping slot (tests).
-func (p *TerminalPane) PingSlotForTest() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if s := p.sessions[p.active]; s != nil {
-		return s.pingSlot
-	}
-	return ""
 }
 
 // ScrollableTerminal exposes the scrollback operations of the displayed
@@ -738,85 +438,20 @@ func (p *TerminalPane) StartSSHFromCmd(entry hosts.Entry, cmd *exec.Cmd, env []s
 
 	term.Attach(backend)
 
-	port := entry.Port
-	if port == "" {
-		port = "22"
-	}
 	p.mu.Lock()
 	p.sessions[key] = &terminalSession{
 		key: key, alias: entry.Alias, source: entry.Source,
-		host: entry.HostName, port: port, started: started,
-		view: term, backend: backend,
-		pingSlot: "[ ·· ms]", pingTarget: net.JoinHostPort(entry.HostName, port),
+		started: started, view: term, backend: backend,
 	}
 	p.order = append(p.order, key)
 	p.active = key
 	p.mu.Unlock()
 
-	p.setSessionTitle(key, false)
+	p.setSessionTitle(key)
 
 	p.pages.AddPage(pageName(key), term, true, true)
 	p.pages.SwitchToPage(pageName(key))
-	p.startTitleTicker()
-	p.startPingForActive()
 	return nil
-}
-
-// startTitleTicker launches (idempotent) a 1-second goroutine that refreshes
-// the active session's title, so the "Up:" uptime telemetry keeps ticking
-// while a session runs. Redraws are marshaled through the app (nil in tests).
-func (p *TerminalPane) startTitleTicker() {
-	p.mu.Lock()
-	if p.tickerOn {
-		p.mu.Unlock()
-		return
-	}
-	stop := make(chan struct{})
-	ticker := time.NewTicker(1 * time.Second)
-	p.stopTitle = stop
-	p.titleTicker = ticker
-	p.tickerOn = true
-	p.mu.Unlock()
-
-	// The goroutine reads its OWN ticker/stop handles captured at spawn time.
-	// stopTitleTicker may nil the pane fields under the lock while this
-	// goroutine is still in flight — dereferencing p.titleTicker here would be
-	// a data race and a nil-pointer panic (observed on macOS CI).
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				p.mu.Lock()
-				hasSession := len(p.sessions) > 0
-				p.mu.Unlock()
-				if !hasSession {
-					continue
-				}
-				p.RefreshActiveTitle()
-				if p.app != nil {
-					p.app.QueueUpdateDraw(func() {})
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
-}
-
-// stopTitleTicker stops the uptime ticker goroutine (idempotent).
-func (p *TerminalPane) stopTitleTicker() {
-	p.mu.Lock()
-	p.tickerOn = false
-	if p.titleTicker != nil {
-		p.titleTicker.Stop()
-		p.titleTicker = nil
-	}
-	if p.stopTitle != nil {
-		close(p.stopTitle)
-		p.stopTitle = nil
-	}
-	p.mu.Unlock()
 }
 
 // Activate makes the given session the displayed one (yield-and-switch: select
@@ -830,8 +465,9 @@ func (p *TerminalPane) Activate(key string) {
 	p.active = key
 	p.mu.Unlock()
 	p.pages.SwitchToPage(pageName(key))
-	p.RefreshActiveTitle()
-	p.startPingForActive()
+	// The newly displayed view carries the identity title; re-applying it is
+	// what keeps the scroll marker composed on top of the right session.
+	p.setSessionTitle(key)
 }
 
 // CloseSession terminates one session and its PTY. If it was the displayed
@@ -855,15 +491,6 @@ func (p *TerminalPane) CloseSession(key string) {
 		p.pages.RemovePage(pageName(key))
 	}
 	p.syncPages()
-	// restart ping for new active or stop if none
-	p.mu.Lock()
-	hasActive := p.active != "" && p.sessions[p.active] != nil
-	p.mu.Unlock()
-	if hasActive {
-		p.startPingForActive()
-	} else {
-		p.stopPingLoop()
-	}
 }
 
 // SyncToMostRecent switches the displayed page to the most recently started
@@ -876,11 +503,6 @@ func (p *TerminalPane) SyncToMostRecent() {
 	}
 	p.mu.Unlock()
 	p.syncPages()
-	if p.active != "" {
-		p.startPingForActive()
-	} else {
-		p.stopPingLoop()
-	}
 }
 
 // syncPages shows either the active session's page or the status page.
@@ -934,14 +556,10 @@ func (p *TerminalPane) CycleSession(offset int) {
 	key := p.active
 	p.mu.Unlock()
 	p.pages.SwitchToPage(pageName(key))
-	p.RefreshActiveTitle()
-	p.startPingForActive()
 }
 
 // Close terminates all sessions and resets the pane to the status page.
 func (p *TerminalPane) Close() {
-	p.stopTitleTicker()
-	p.stopPingLoop()
 	p.mu.Lock()
 	var backends []*PtyBackend
 	for _, s := range p.sessions {

@@ -1200,6 +1200,17 @@ func (v *View) resizeBackend(cols, rows int) {
 }
 
 func keyToBytes(ev *tcell.EventKey, appCursor bool) ([]byte, bool) {
+	// A Ctrl-modified KeyRune has no printable meaning: it is the encoding
+	// kitty CSI-u / xterm modifyOtherKeys use for chords like Ctrl+Shift+C.
+	// Falling through to the KeyRune case below would type the literal letter
+	// into the remote shell, so map it to its control byte and drop the chords
+	// that have none. Alt-chords keep their ESC-prefix path.
+	if ev.Key() == tcell.KeyRune && ev.Modifiers()&tcell.ModCtrl != 0 && ev.Modifiers()&tcell.ModAlt == 0 {
+		if b, ok := controlByteForRune(ev.Rune()); ok {
+			return []byte{b}, true
+		}
+		return nil, false
+	}
 	if seq, ok := modifiedKeyToBytes(ev); ok {
 		return seq, true
 	}
@@ -1319,6 +1330,27 @@ func modifiedKeyToBytes(ev *tcell.EventKey) ([]byte, bool) {
 	}
 
 	return nil, false
+}
+
+// controlByteForRune maps the rune a terminal reports for a Ctrl chord to the
+// control byte it stands for. Shift does not change the byte, so 'c' and 'C'
+// both map to 0x03. Runes with no control meaning report false.
+func controlByteForRune(r rune) (byte, bool) {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return byte(r - 'a' + 1), true
+	case r >= 'A' && r <= 'Z':
+		return byte(r - 'A' + 1), true
+	}
+	switch r {
+	case '?':
+		// Ctrl+? is DEL, not the C0 alias its low bits suggest.
+		return 0x7f, true
+	case '@', '[', '\\', ']', '^', '_', '|', '`', ' ':
+		// C0 aliases: the control character's own code point.
+		return byte(r & 0x1f), true
+	}
+	return 0, false
 }
 
 func writeAll(w io.Writer, p []byte) error {
